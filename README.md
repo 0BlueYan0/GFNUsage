@@ -5,7 +5,10 @@ system tray or the macOS menu bar.
 
 [繁體中文說明](README.zh-TW.md)
 
-> **Status:** in development. There is no runnable build yet.
+> **Status:** milestone 1 is done. GFNUsage imports credentials from a
+> local GeForce NOW install, refreshes them on its own, and shows the
+> remaining hours in the Windows tray or the macOS menu bar. Pace
+> thresholds and prediction land in milestone 2.
 
 ## Why
 
@@ -15,9 +18,10 @@ single period tops out at 115 hours. The official client shows you a
 number buried in a settings page. It will not tell you whether you are
 burning through it too fast.
 
-## Planned features
+## Features
 
-- **Remaining hours, always visible** — no need to open the GFN client
+- ✅ **Remaining hours, always visible** — no need to open the GFN client
+- ✅ **Rollover and purchased time** — shown as part of the period's total
 - **Pace threshold** — how much *should* you have used by now? Go past it
   and the display turns red
 - **Overrun prediction** — which day you run out, and by how much
