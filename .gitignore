@@ -1,0 +1,54 @@
+# Rust / Tauri
+/target/
+/src-tauri/target/
+/src-tauri/gen/
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Build and test output
+/build/
+coverage/
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Runtime data — must never be committed
+*.log
+/local/
+snapshots.json
+config.local.json
+
+# Credentials. These belong in the OS keychain; this is a backstop in case
+# one ever lands on disk by mistake.
+*.pem
+*.key
+sharedstorage.json
+.at
+
+# Working documents and agent artefacts. Kept locally, never published:
+# design specs, implementation plans, research notes, and the config files
+# various coding assistants leave behind.
+/docs/
+/notes/
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.claude/
+.cursor/
+.cursorrules
+.windsurfrules
+.aider*
+.github/copilot-instructions.md
+*.plan.md
