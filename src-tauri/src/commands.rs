@@ -6,7 +6,7 @@ use tauri::State;
 
 use crate::api::subscriptions::{fetch_subscription, MES_BASE};
 use crate::auth::session::{
-    decode_session_data, default_shared_storage_path, read_shared_storage,
+    decode_session_data, default_shared_storage_path, read_shared_storage, ImportedSession,
 };
 use crate::error::GfnError;
 use crate::quota::QuotaSnapshot;
@@ -31,24 +31,39 @@ pub fn get_snapshot(state: State<'_, Arc<AppState>>) -> PanelData {
 
 /// 從本機安裝的 GFN 客戶端匯入憑證。
 #[tauri::command]
-pub fn import_from_local_gfn(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+pub async fn import_from_local_gfn(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let path = default_shared_storage_path()
         .ok_or_else(|| "這個平台沒有 GeForce NOW 客戶端資料，請改用手動貼上".to_string())?;
     let session = read_shared_storage(&path).map_err(|e| e.to_string())?;
-    state.store.save(&session).map_err(|e| e.to_string())
+    store_credentials(state.inner(), session).await
 }
 
 /// 手動貼上 `starfleetSession.data` 的原始字串。給 Mac 等沒裝 GFN 的機器用。
 #[tauri::command]
-pub fn import_manual(state: State<'_, Arc<AppState>>, data: String) -> Result<(), String> {
+pub async fn import_manual(state: State<'_, Arc<AppState>>, data: String) -> Result<(), String> {
     let session = decode_session_data(&data).map_err(|e| e.to_string())?;
-    state.store.save(&session).map_err(|e| e.to_string())
+    store_credentials(state.inner(), session).await
+}
+
+/// 寫入新憑證。
+///
+/// 一定要一併丟棄快取的 token —— 否則換了帳號之後，舊帳號那顆還沒過期的
+/// id_token 會被繼續拿來查詢，畫面上就會顯示錯的人的額度。
+async fn store_credentials(state: &Arc<AppState>, session: ImportedSession) -> Result<(), String> {
+    state.store.save(&session).map_err(|e| e.to_string())?;
+    state.tokens.invalidate().await;
+    *state.snapshot.lock().unwrap() = None;
+    *state.last_error.lock().unwrap() = None;
+    Ok(())
 }
 
 /// 清除憑證，回到未登入狀態。
+///
+/// 同樣必須丟棄快取的 token，不然「解除連結」之後按更新還是會成功。
 #[tauri::command]
-pub fn sign_out(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+pub async fn sign_out(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state.store.clear().map_err(|e| e.to_string())?;
+    state.tokens.invalidate().await;
     *state.snapshot.lock().unwrap() = None;
     *state.last_error.lock().unwrap() = None;
     Ok(())

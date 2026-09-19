@@ -265,4 +265,45 @@ mod tests {
             Err(GfnError::NeedsLogin)
         ));
     }
+
+    #[tokio::test]
+    async fn invalidate_forces_a_fresh_refresh() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(token_response("CT-NEW"))
+            .expect(2) // 一次是首抓，一次是 invalidate 之後
+            .mount(&server)
+            .await;
+
+        let manager = TokenManager::new(seeded_store(), reqwest::Client::new(), server.uri());
+        manager.ensure_token().await.unwrap();
+        manager.ensure_token().await.unwrap(); // 用快取，不打網路
+
+        manager.invalidate().await;
+        manager.ensure_token().await.unwrap(); // 快取沒了，必須重抓
+    }
+
+    #[tokio::test]
+    async fn invalidated_manager_with_cleared_store_needs_login() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(token_response("CT-NEW"))
+            .mount(&server)
+            .await;
+
+        let store = seeded_store();
+        let manager = TokenManager::new(store.clone(), reqwest::Client::new(), server.uri());
+        manager.ensure_token().await.unwrap();
+
+        // 這就是「解除連結」做的事：清 store + 丟快取。
+        store.clear().unwrap();
+        manager.invalidate().await;
+
+        assert!(matches!(
+            manager.ensure_token().await,
+            Err(GfnError::NeedsLogin)
+        ));
+    }
 }
