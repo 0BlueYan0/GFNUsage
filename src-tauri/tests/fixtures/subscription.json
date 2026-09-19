@@ -1,0 +1,33 @@
+{
+  "subscriptionId": "sub_TESTFIXTURE0001",
+  "membershipTier": "ULTIMATE",
+  "subType": "TIME_CAPPED",
+  "type": "PAID",
+  "productSku": "11001",
+  "allottedTimeInMinutes": 6000,
+  "rolledOverTimeInMinutes": 900,
+  "purchasedTimeInMinutes": 0,
+  "totalTimeInMinutes": 6900,
+  "remainingTimeInMinutes": 6180,
+  "startDateTime": "2026-09-15T13:18:59.651Z",
+  "currentSpanStartDateTime": "2026-09-15T13:18:59.675Z",
+  "currentSpanEndDateTime": "2026-10-15T23:59:59.999Z",
+  "expirationDateTime": "2026-10-15T13:18:47.000Z",
+  "autoPaymentState": "OFF",
+  "currentSubscriptionState": {
+    "state": "FULL",
+    "isGamePlayAllowed": true
+  },
+  "notifications": {
+    "notifyUserWhenTimeRemainingInMinutes": 300,
+    "notifyUserOnSessionWhenRemainingTimeInMinutes": 120
+  },
+  "addons": [
+    {
+      "type": "STORAGE",
+      "subType": "EPHEMERAL_STORAGE",
+      "attributes": [{ "key": "TOTAL_STORAGE_SIZE_IN_GB", "textValue": "100" }]
+    }
+  ],
+  "upsells": [{ "key": "LOWER_SESSION_QUEUE_WAIT_TIME", "booleanValue": false }]
+}
