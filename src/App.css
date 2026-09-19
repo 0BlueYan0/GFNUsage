@@ -1,0 +1,240 @@
+:root {
+  --bg: #ffffff;
+  --bg-sunken: #f1f3f5;
+  --fg: #16181c;
+  --fg-muted: #6b7280;
+  --line: #e4e7eb;
+  --accent: #76b900;
+  --state-normal: #16181c;
+  --state-low: #b45309;
+  --state-exhausted: #dc2626;
+  --state-free: #64748b;
+
+  color-scheme: light dark;
+  font-family: "Segoe UI Variable", "Segoe UI", -apple-system, system-ui,
+    "Noto Sans TC", sans-serif;
+  font-size: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f2023;
+    --bg-sunken: #2a2c30;
+    --fg: #ececee;
+    --fg-muted: #9ca3af;
+    --line: #35383d;
+    --state-normal: #ececee;
+    --state-low: #f59e0b;
+    --state-exhausted: #ef4444;
+    --state-free: #94a3b8;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: transparent;
+  color: var(--fg);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100vh;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.panel__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.panel__tier {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+
+.badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.badge--low {
+  color: var(--state-low);
+}
+
+.badge--exhausted {
+  color: var(--state-exhausted);
+}
+
+/* 主要數字：面板的主角 */
+.hero {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.hero__value {
+  font-size: 44px;
+  font-weight: 650;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--state-normal);
+}
+
+.hero__value--low {
+  color: var(--state-low);
+}
+
+.hero__value--exhausted {
+  color: var(--state-exhausted);
+}
+
+.hero__unit {
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.meter {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.meter__fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 240ms ease;
+}
+
+.meter__fill--low {
+  background: var(--state-low);
+}
+
+.meter__fill--exhausted {
+  background: var(--state-exhausted);
+}
+
+.facts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.facts__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.facts__row dt {
+  color: var(--fg-muted);
+}
+
+.facts__row dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.note {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.alert {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-sunken);
+  color: var(--state-exhausted);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+button {
+  flex: 1;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-sunken);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--fg-muted);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: #10240a;
+  font-weight: 600;
+}
+
+button.link {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border-color: transparent;
+  background: none;
+  color: var(--fg-muted);
+}
+
+textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-sunken);
+  color: var(--fg);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  resize: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
