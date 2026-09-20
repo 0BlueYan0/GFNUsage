@@ -3,6 +3,7 @@ pub mod auth;
 pub mod commands;
 pub mod error;
 pub mod pace;
+pub mod panel;
 pub mod quota;
 pub mod store;
 pub mod tray;
@@ -38,6 +39,9 @@ pub struct AppState {
     pub store: Arc<dyn TokenStore>,
     pub http: reqwest::Client,
     pub mes_base: String,
+    /// NVIDIA 登入端點。`TokenManager` 內部也有一份，但 OAuth 登入流程
+    /// 在指令端組授權網址，從這裡拿。測試注入 mock server 的位址。
+    pub auth_base: String,
     /// 這兩個用 std 的 Mutex 是刻意的：鎖絕不跨越 await 持有。
     /// 若之後需要在持鎖期間 await，要改成 tokio::sync::Mutex。
     pub snapshot: Mutex<Option<QuotaSnapshot>>,
@@ -103,6 +107,7 @@ impl AppState {
             store,
             http,
             mes_base: mes_base.to_string(),
+            auth_base: auth_base.to_string(),
             settings_dir,
             snapshot: Mutex::new(None),
             pace: Mutex::new(None),

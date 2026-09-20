@@ -4,14 +4,17 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Runtime, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::api::subscriptions::fetch_subscription;
+use crate::auth::oauth;
 use crate::auth::session::{
     decode_session_data, default_shared_storage_path, read_shared_storage, ImportedSession,
 };
 use crate::error::GfnError;
 use crate::pace::schedule::Schedule;
 use crate::pace::{self, PaceReport};
+use crate::panel;
 use crate::quota::{DisplayState, QuotaSnapshot};
 use crate::store::{self, SnapshotRow};
 use crate::tray;
@@ -142,6 +145,107 @@ async fn finish_link<R: Runtime>(
     result?;
     let _ = refresh_into_state(app, state).await;
     Ok(())
+}
+
+/// 走 localhost 迴圈 OAuth 登入（spec §4.1 主要路徑）。
+///
+/// 錯誤走**兩條路**：寫進 `last_error`（面板上看得到），同時往外丟
+/// （按鈕旁也看得到）。這條路長達五分鐘，而且開瀏覽器會把面板弄到失焦
+/// 收起來 —— 只靠其中一條的話，使用者很可能兩邊都沒看到。
+#[tauri::command]
+pub async fn start_login(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let state = state.inner();
+
+    let pending = match begin_login(state).await {
+        Ok(pending) => pending,
+        Err(message) => {
+            tray::sync(&app, state);
+            return Err(message);
+        }
+    };
+
+    if let Err(e) = app.opener().open_url(pending.url.clone(), None::<&str>) {
+        return Err(record_error(state, format!("開不了瀏覽器：{e}")));
+    }
+
+    let result = finish_login(state, pending).await;
+
+    // 開瀏覽器會把面板弄到失焦，失焦處理器就把它收起來了。
+    // 不叫回來給使用者看結果，等於整件事無聲無息地結束。
+    panel::show_default(&app);
+    finish_link(&app, state, result).await
+}
+
+/// 登入流程的前半段：綁迴圈埠、產生 PKCE 與 nonce、組出授權網址。
+///
+/// 分成兩半是因為中間那一步要開瀏覽器（需要 `AppHandle`），
+/// 而前後兩半都是可以離線測試的。
+#[derive(Debug)]
+pub struct Pending {
+    pub listener: tokio::net::TcpListener,
+    pub url: String,
+    pub redirect_uri: String,
+    pub verifier: String,
+    pub nonce: String,
+}
+
+pub async fn begin_login(state: &AppState) -> Result<Pending, String> {
+    let prepare = async {
+        let (listener, port) = oauth::bind_first_free().await?;
+        let redirect_uri = oauth::redirect_uri(port);
+        let verifier = oauth::verifier()?;
+        // nonce 的需求和 verifier 一模一樣：夠長、不可預測、URL 安全。
+        let nonce = oauth::verifier()?;
+        let url = oauth::authorize_url(
+            &state.auth_base,
+            &redirect_uri,
+            &oauth::challenge(&verifier),
+            &nonce,
+        );
+        Ok::<_, GfnError>(Pending {
+            listener,
+            url,
+            redirect_uri,
+            verifier,
+            nonce,
+        })
+    };
+    prepare
+        .await
+        .map_err(|e| record_error(state, e.to_string()))
+}
+
+/// 後半段：等授權碼回來、換成憑證、寫進金鑰儲存區。
+pub async fn finish_login(state: &AppState, pending: Pending) -> Result<(), String> {
+    let run = async {
+        let code = oauth::wait_for_code(pending.listener, oauth::LOGIN_TIMEOUT).await?;
+        let (session, id_token) = oauth::exchange(
+            &state.http,
+            &state.auth_base,
+            &code,
+            &pending.redirect_uri,
+            &pending.verifier,
+            &pending.nonce,
+            Utc::now(),
+        )
+        .await?;
+
+        // 換碼已經給了一顆能用的 id_token，連同憑證一起收下 ——
+        // 在這裡再刷新一次只是白白多鑄一顆，離同時有效上限更近一步。
+        state
+            .tokens
+            .replace_credentials_with_token(session, Some(&id_token))
+            .await?;
+        Ok::<_, GfnError>(())
+    };
+
+    match run.await {
+        Ok(()) => {
+            reset_state(state);
+            Ok(())
+        }
+        Err(e) => Err(record_error(state, e.to_string())),
+    }
 }
 
 /// 清除憑證，回到未登入狀態。
@@ -467,6 +571,43 @@ mod tests {
         assert!(refresh_state(&h.state).await.is_err());
 
         assert!(history_lines(&h.state).is_empty());
+    }
+
+    /// 埠全被占用時（GFN 客戶端正在登入）要講人話，而且不能動到既有憑證。
+    #[tokio::test]
+    async fn a_login_that_cannot_bind_leaves_the_credentials_alone() {
+        let h = harness(true).await;
+        let mut held = Vec::new();
+        for port in crate::auth::oauth::PORTS {
+            match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                Ok(listener) => held.push(listener),
+                // 某個埠本來就被別的東西占著，這個測試就失去意義了 ——
+                // 與其偽陽性通過，不如直接跳過。
+                Err(_) => return,
+            }
+        }
+
+        let problem = begin_login(&h.state).await.unwrap_err();
+
+        assert!(problem.contains("連接埠"), "{problem}");
+        assert_eq!(h.store.load().unwrap().unwrap().client_token, "CT-OLD");
+        // 登入失敗要看得見，不能只是按了沒反應。
+        assert_eq!(last_error(&h.state), Some(problem));
+    }
+
+    /// 授權網址要指向注入的 auth_base，不是寫死的 login.nvidia.com ——
+    /// 不然測試與正式環境會打到不同的地方。
+    #[tokio::test]
+    async fn the_authorize_url_points_at_the_configured_endpoint() {
+        let h = harness(false).await;
+
+        let pending = begin_login(&h.state).await.unwrap();
+
+        assert!(pending
+            .url
+            .starts_with(&format!("{}/authorize?", h.server.uri())));
+        // verifier 與 nonce 各自獨立產生，不能是同一個值。
+        assert_ne!(pending.verifier, pending.nonce);
     }
 
     fn last_error(state: &AppState) -> Option<String> {

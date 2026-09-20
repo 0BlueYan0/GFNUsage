@@ -113,19 +113,22 @@ function SignIn({
   busy,
   error,
   needsLogin,
+  onLogin,
   onImportLocal,
   onImportManual,
 }: {
   busy: boolean;
   error: string | null;
   needsLogin: boolean;
+  onLogin: () => void;
   onImportLocal: () => void;
   onImportManual: (data: string) => void;
 }) {
   const [pasted, setPasted] = useState("");
 
+  // 內容比主畫面長，而 `.panel` 是固定高度又切掉溢出的部分。
   return (
-    <div className="panel">
+    <div className="panel panel--scroll">
       <header className="panel__header">
         <h1 className="panel__title">
           {needsLogin ? "重新連結 NVIDIA 帳號" : "連結 NVIDIA 帳號"}
@@ -134,17 +137,25 @@ function SignIn({
 
       {needsLogin && (
         <p className="note">
-          NVIDIA 不再接受目前的憑證。先開啟 GeForce NOW 確認能正常登入，再重新匯入。
+          NVIDIA 不再接受目前的憑證。重新登入一次就好。
         </p>
       )}
 
       <p className="note">
-        從這台電腦已安裝的 GeForce NOW 匯入憑證。沒有安裝的話，
+        用 NVIDIA 帳號登入。瀏覽器會開起來，登入完成後這個面板會自己回來。
+      </p>
+
+      <button className="primary" disabled={busy} onClick={onLogin}>
+        {busy ? "等待瀏覽器…" : "登入 NVIDIA 帳號"}
+      </button>
+
+      <p className="note">
+        或者，從這台電腦已安裝的 GeForce NOW 匯入憑證。沒有安裝的話，
         到有安裝的機器上取出 <code>sharedstorage.json</code> 裡
         <code>starfleetSession.data</code> 的值貼到下面。
       </p>
 
-      <button className="primary" disabled={busy} onClick={onImportLocal}>
+      <button disabled={busy} onClick={onImportLocal}>
         從本機 GeForce NOW 匯入
       </button>
 
@@ -258,6 +269,7 @@ export default function App() {
         busy={busy}
         error={data.lastError}
         needsLogin={data.needsLogin}
+        onLogin={() => runQuietly(() => invoke("start_login"))}
         onImportLocal={() => runQuietly(() => invoke("import_from_local_gfn"))}
         onImportManual={(value) =>
           runQuietly(() => invoke("import_manual", { data: value }))

@@ -4,11 +4,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gfnusage_lib::commands::{self, poll_due, refresh_into_state};
+use gfnusage_lib::panel::{self, PANEL_LABEL};
 use gfnusage_lib::tray;
 use gfnusage_lib::AppState;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, PhysicalPosition, WebviewWindow, WindowEvent};
+use tauri::{Manager, WindowEvent};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -18,61 +19,9 @@ const POLL_INTERVAL: Duration = Duration::from_secs(300);
 /// 沒有這個寬限期，面板就會在同一次點擊中收起又立刻重開，變成關不掉。
 const REOPEN_GRACE: Duration = Duration::from_millis(300);
 
-const PANEL_LABEL: &str = "main";
-
-/// 面板與螢幕可用區邊緣的間距。
-const PANEL_MARGIN: i32 = 12;
-
-/// 把面板貼到離點擊處最近的可用區角落。
-///
-/// 用「最近的角落」而不是寫死右下角：工作列可以在四邊任何一側，而系統匣永遠
-/// 緊鄰工作列，所以離點擊處最近的角落一定就是正確的那個角落。可用區
-/// （work area）已經排除工作列本身，面板不會被壓在它底下。
-fn position_panel(window: &WebviewWindow, near: PhysicalPosition<f64>) {
-    let monitor = match window.app_handle().monitor_from_point(near.x, near.y) {
-        Ok(Some(monitor)) => monitor,
-        _ => match window.primary_monitor() {
-            Ok(Some(monitor)) => monitor,
-            _ => return,
-        },
-    };
-
-    let area = monitor.work_area();
-    let Ok(size) = window.outer_size() else {
-        return;
-    };
-
-    let (ax, ay) = (area.position.x, area.position.y);
-    let (aw, ah) = (area.size.width as i32, area.size.height as i32);
-    let (ww, wh) = (size.width as i32, size.height as i32);
-
-    let x = if (near.x as i32) > ax + aw / 2 {
-        ax + aw - ww - PANEL_MARGIN
-    } else {
-        ax + PANEL_MARGIN
-    };
-    let y = if (near.y as i32) > ay + ah / 2 {
-        ay + ah - wh - PANEL_MARGIN
-    } else {
-        ay + PANEL_MARGIN
-    };
-
-    // 面板比可用區還大時（極小螢幕），夾在區域內而不是跑到畫面外。
-    let x = x.clamp(ax, (ax + aw - ww).max(ax));
-    let y = y.clamp(ay, (ay + ah - wh).max(ay));
-
-    let _ = window.set_position(PhysicalPosition::new(x, y));
-}
-
-fn show_panel(window: &WebviewWindow, near: PhysicalPosition<f64>) {
-    // 先定位再顯示，否則會在舊位置閃一下。
-    position_panel(window, near);
-    let _ = window.show();
-    let _ = window.set_focus();
-}
-
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let settings_dir = app
                 .path()
@@ -142,7 +91,7 @@ fn main() {
                     }
 
                     if let Some(window) = app.get_webview_window(PANEL_LABEL) {
-                        show_panel(&window, position);
+                        panel::show(&window, position);
                     }
                 })
                 .build(app)?;
@@ -176,6 +125,7 @@ fn main() {
             commands::refresh_now,
             commands::refresh_if_due,
             commands::sign_out,
+            commands::start_login,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
