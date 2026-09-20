@@ -7,6 +7,7 @@ use tauri::image::Image;
 use tauri::tray::TrayIcon;
 use tauri::{AppHandle, Runtime};
 
+use crate::pace::PaceReport;
 use crate::quota::{DisplayState, QuotaSnapshot};
 use crate::AppState;
 
@@ -35,6 +36,7 @@ pub struct TrayFace {
 /// 好資料藏起來；但憑證死了就不能再一副數字很正常的樣子。
 pub fn face(
     snapshot: Option<&QuotaSnapshot>,
+    pace: Option<&PaceReport>,
     error: Option<&str>,
     needs_login: bool,
     now: DateTime<Utc>,
@@ -62,9 +64,15 @@ pub fn face(
         };
     };
 
-    let label = snapshot.tray_label();
+    let state = crate::pace::display_state(snapshot, pace);
+    // 已用完時不顯示那個看起來很正常的 0（spec §7.2）。實際數字在 tooltip 裡。
+    let label = if state == DisplayState::Exhausted {
+        "!".to_string()
+    } else {
+        snapshot.tray_label()
+    };
     let stale = now - snapshot.fetched_at > Duration::minutes(STALE_AFTER_MINUTES);
-    let base = icon::state_color(snapshot.state);
+    let base = icon::state_color(state);
 
     let mut tooltip = if snapshot.time_capped {
         format!(
@@ -126,7 +134,15 @@ pub fn sync<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
     let needs_login = state.needs_login.load(Ordering::SeqCst);
     apply_face(
         &tray,
-        &face(snapshot.as_ref(), error.as_deref(), needs_login, Utc::now()),
+        &face(
+            snapshot.as_ref(),
+            // Task 6 會改成讀 `state.pace`。在那之前系統匣照常運作，
+            // 只是還不會顯示超前消耗。
+            None,
+            error.as_deref(),
+            needs_login,
+            Utc::now(),
+        ),
     );
 }
 
@@ -150,7 +166,7 @@ mod tests {
 
     #[test]
     fn idle_face_when_nothing_has_been_fetched() {
-        let f = face(None, None, false, now());
+        let f = face(None, None, None, false, now());
         assert_eq!(f.label, "–");
         assert_eq!(f.title, None);
         assert_eq!(f.tooltip, IDLE_TOOLTIP);
@@ -158,7 +174,7 @@ mod tests {
 
     #[test]
     fn healthy_snapshot_shows_hours_in_the_state_color() {
-        let f = face(Some(&snapshot(now())), None, false, now());
+        let f = face(Some(&snapshot(now())), None, None, false, now());
         assert_eq!(f.label, "103");
         assert_eq!(f.title.as_deref(), Some("103h"));
         assert_eq!(f.color, icon::state_color(DisplayState::Normal));
@@ -168,7 +184,7 @@ mod tests {
     /// 憑證死了，圖示不能還一副數字很正常的樣子。
     #[test]
     fn needs_login_shows_an_exclamation_mark() {
-        let f = face(Some(&snapshot(now())), Some("需要重新登入"), true, now());
+        let f = face(Some(&snapshot(now())), None, Some("需要重新登入"), true, now());
         assert_eq!(f.label, "!");
         assert_eq!(f.color, icon::state_color(DisplayState::FreeTier));
         assert_eq!(f.title, None);
@@ -178,7 +194,7 @@ mod tests {
     #[test]
     fn a_recent_error_keeps_the_number_and_reports_it_in_the_tooltip() {
         let fetched = now() - Duration::minutes(3);
-        let f = face(Some(&snapshot(fetched)), Some("網路錯誤：離線"), false, now());
+        let f = face(Some(&snapshot(fetched)), None, Some("網路錯誤：離線"), false, now());
         assert_eq!(f.label, "103");
         assert_eq!(f.color, icon::state_color(DisplayState::Normal));
         assert!(f.tooltip.contains("網路錯誤：離線"), "{}", f.tooltip);
@@ -189,15 +205,57 @@ mod tests {
     #[test]
     fn a_stale_snapshot_is_dimmed() {
         let fetched = now() - Duration::minutes(STALE_AFTER_MINUTES + 1);
-        let f = face(Some(&snapshot(fetched)), Some("網路錯誤：離線"), false, now());
+        let f = face(Some(&snapshot(fetched)), None, Some("網路錯誤：離線"), false, now());
         assert_eq!(f.label, "103");
         assert_eq!(f.color, icon::dimmed(icon::state_color(DisplayState::Normal)));
     }
 
     #[test]
     fn an_error_without_a_snapshot_goes_in_the_tooltip() {
-        let f = face(None, Some("網路錯誤：離線"), false, now());
+        let f = face(None, None, Some("網路錯誤：離線"), false, now());
         assert_eq!(f.label, "–");
         assert!(f.tooltip.contains("網路錯誤：離線"), "{}", f.tooltip);
+    }
+
+    /// spec §7.2：超前消耗轉紅。
+    #[test]
+    fn over_pace_turns_the_icon_red() {
+        use crate::pace::{self, PaceReport};
+
+        let snap = snapshot(now());
+        let report = PaceReport {
+            avail_past_minutes: 14400,
+            avail_left_minutes: 28800,
+            expected_used_minutes: Some(2000.0),
+            over_pace_minutes: Some(1000.0),
+            burn_rate: Some(0.2),
+            projected_used_minutes: None,
+            overshoot_minutes: None,
+            runs_out_at: None,
+            wasted_minutes: None,
+            today_budget_minutes: None,
+            note: None,
+        };
+        let f = face(Some(&snap), Some(&report), None, false, now());
+        assert_eq!(f.label, "103");
+        assert_eq!(f.color, icon::state_color(DisplayState::OverPace));
+        assert_eq!(
+            pace::display_state(&snap, Some(&report)),
+            DisplayState::OverPace
+        );
+    }
+
+    /// spec §7.2：已用完是紅色加驚嘆號，不是一個看起來很正常的 0。
+    #[test]
+    fn an_exhausted_quota_shows_an_exclamation_mark() {
+        let mut sub: Subscription = serde_json::from_str(FIXTURE).unwrap();
+        sub.remaining_time_in_minutes = 0;
+        sub.current_subscription_state.is_game_play_allowed = false;
+        let snap = QuotaSnapshot::from_subscription(&sub, now());
+
+        let f = face(Some(&snap), None, None, false, now());
+        assert_eq!(f.label, "!");
+        assert_eq!(f.color, icon::state_color(DisplayState::Exhausted));
+        assert!(f.tooltip.contains("0.0"), "{}", f.tooltip);
     }
 }
