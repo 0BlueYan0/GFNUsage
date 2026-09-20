@@ -1,12 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import "./App.css";
-import type { DisplayState, PanelData, QuotaSnapshot } from "./types";
-import { daysUntil, formatHours, formatResetAt, percentUsed } from "./types";
+import { daysUntil, formatHours, formatResetAt, percentUsed } from "./format";
+import Pace from "./Pace";
+import type {
+  DisplayState,
+  PaceReport,
+  PanelData,
+  QuotaSnapshot,
+} from "./types";
 
 const STATE_BADGE: Record<DisplayState, string | null> = {
   normal: null,
   low: "時數偏低",
+  overPace: "超前消耗",
   exhausted: "已用完",
   freeTier: "免費方案",
 };
@@ -18,7 +25,15 @@ function modifier(base: string, state: DisplayState): string {
     : `${base} ${base}--${state}`;
 }
 
-function Quota({ snapshot }: { snapshot: QuotaSnapshot }) {
+function Quota({
+  snapshot,
+  state,
+  pace,
+}: {
+  snapshot: QuotaSnapshot;
+  state: DisplayState;
+  pace: PaceReport | null;
+}) {
   if (!snapshot.timeCapped) {
     return <p className="note">此方案沒有每月時數上限，不需要盯著用量。</p>;
   }
@@ -29,7 +44,7 @@ function Quota({ snapshot }: { snapshot: QuotaSnapshot }) {
   return (
     <>
       <div className="hero">
-        <span className={modifier("hero__value", snapshot.state)}>
+        <span className={modifier("hero__value", state)}>
           {formatHours(snapshot.remainingMinutes)}
         </span>
         <span className="hero__unit">
@@ -46,7 +61,7 @@ function Quota({ snapshot }: { snapshot: QuotaSnapshot }) {
         aria-label="已使用的月配額"
       >
         <div
-          className={modifier("meter__fill", snapshot.state)}
+          className={modifier("meter__fill", state)}
           style={{ width: `${used}%` }}
         />
       </div>
@@ -80,6 +95,14 @@ function Quota({ snapshot }: { snapshot: QuotaSnapshot }) {
           </div>
         )}
       </dl>
+
+      {pace && (
+        <Pace
+          pace={pace}
+          usedMinutes={snapshot.usedMinutes}
+          totalMinutes={snapshot.totalMinutes}
+        />
+      )}
     </>
   );
 }
@@ -212,7 +235,7 @@ export default function App() {
   }
 
   const snapshot = data.snapshot;
-  const badge = snapshot ? STATE_BADGE[snapshot.state] : null;
+  const badge = snapshot ? STATE_BADGE[data.state] : null;
 
   return (
     <div className="panel">
@@ -222,12 +245,12 @@ export default function App() {
           {snapshot && <span className="panel__tier"> · {snapshot.tier}</span>}
         </h1>
         {badge && (
-          <span className={modifier("badge", snapshot!.state)}>{badge}</span>
+          <span className={modifier("badge", data.state)}>{badge}</span>
         )}
       </header>
 
       {snapshot ? (
-        <Quota snapshot={snapshot} />
+        <Quota snapshot={snapshot} state={data.state} pace={data.pace} />
       ) : (
         <p className="note">還沒有資料，按下方的「立即更新」試試。</p>
       )}

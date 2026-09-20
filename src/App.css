@@ -7,6 +7,7 @@
   --accent: #76b900;
   --state-normal: #16181c;
   --state-low: #b45309;
+  --state-over-pace: #dc2626;
   --state-exhausted: #dc2626;
   --state-free: #64748b;
 
@@ -25,6 +26,7 @@
     --line: #35383d;
     --state-normal: #ececee;
     --state-low: #f59e0b;
+    --state-over-pace: #ef4444;
     --state-exhausted: #ef4444;
     --state-free: #94a3b8;
   }
@@ -237,4 +239,60 @@ textarea {
   resize: none;
   user-select: text;
   -webkit-user-select: text;
+}
+
+.badge--overPace {
+  color: var(--state-over-pace);
+}
+
+.hero__value--overPace {
+  color: var(--state-over-pace);
+}
+
+.meter__fill--overPace {
+  background: var(--state-over-pace);
+}
+
+.pace {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.pace__today {
+  margin: 0;
+  font-weight: 600;
+}
+
+.pace__row {
+  display: flex;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.pace__label {
+  flex: 0 0 32px;
+  color: var(--fg-muted);
+}
+
+.pace__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pace__flag {
+  color: var(--fg-muted);
+}
+
+.pace__flag--over {
+  color: var(--state-over-pace);
+  font-weight: 600;
+}
+
+.pace__runs-out,
+.pace__waste {
+  color: var(--fg-muted);
 }
