@@ -60,3 +60,64 @@ pub fn describe_shape(body: &str) -> String {
         Err(_) => format!("回應不是 JSON（{} bytes）", body.len()),
     }
 }
+
+/// 取出 OAuth 錯誤回應裡的 `error` 與 `error_description`（RFC 6749 §5.2）。
+///
+/// 只取這兩個具名欄位，不是把整包 body 倒出來 —— 錯誤回應照理不含憑證，
+/// 但「照理」不值得賭，而這兩個欄位就是全部需要的東西。不是預期的形狀時
+/// 退回 `describe_shape`，至少還說得出對方給了什麼。
+pub fn describe_oauth_error(body: &str) -> String {
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(body) else {
+        return describe_shape(body);
+    };
+    let field = |key: &str| map.get(key).and_then(serde_json::Value::as_str);
+
+    match (field("error"), field("error_description")) {
+        (Some(error), Some(description)) => format!("{error}：{description}"),
+        (Some(text), None) | (None, Some(text)) => text.to_string(),
+        (None, None) => describe_shape(body),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 這是第一次實測真正需要的那一行：哪個參數錯了。
+    #[test]
+    fn an_oauth_error_reads_out_the_code_and_the_description() {
+        let body =
+            r#"{"error":"invalid_grant","error_description":"code_verifier does not match"}"#;
+
+        assert_eq!(
+            describe_oauth_error(body),
+            "invalid_grant：code_verifier does not match"
+        );
+    }
+
+    #[test]
+    fn an_oauth_error_without_a_description_is_just_the_code() {
+        assert_eq!(
+            describe_oauth_error(r#"{"error":"invalid_request"}"#),
+            "invalid_request"
+        );
+    }
+
+    /// 伺服器回了 JSON 但不是 OAuth 那套欄位。至少說得出它給了什麼，
+    /// 而且一樣不吐出任何值。
+    #[test]
+    fn a_body_without_oauth_fields_falls_back_to_the_shape() {
+        let described = describe_oauth_error(r#"{"message":"nope","code":42}"#);
+
+        assert!(described.contains("message"), "{described}");
+        assert!(described.contains("code"), "{described}");
+        assert!(!described.contains("nope"), "不該吐出值：{described}");
+    }
+
+    #[test]
+    fn a_body_that_is_not_json_falls_back_to_the_shape() {
+        let described = describe_oauth_error("<html>502 Bad Gateway</html>");
+
+        assert!(described.contains("不是 JSON"), "{described}");
+    }
+}

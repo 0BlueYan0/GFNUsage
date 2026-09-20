@@ -167,6 +167,7 @@ fn main() {
             commands::refresh_if_due,
             commands::sign_out,
             commands::start_login,
+            commands::cancel_login_command,
             commands::export_schedule,
             commands::import_schedule,
             commands::dismiss_tray_hint,

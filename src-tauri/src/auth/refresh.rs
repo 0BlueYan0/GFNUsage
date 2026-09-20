@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::auth::jwt;
 use crate::auth::store::{StoredSession, TokenStore};
-use crate::error::{describe_shape, GfnError};
+use crate::error::{describe_oauth_error, describe_shape, GfnError};
 
 pub const STARFLEET_CLIENT_ID: &str = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ";
 pub const STARFLEET_BASE: &str = "https://login.nvidia.com";
@@ -81,7 +81,11 @@ pub async fn get_client_token(
             GfnError::TooManyTokens
         } else {
             // 這是登入途中失敗，不是既有憑證被拒 —— 不要報成 NeedsLogin。
-            GfnError::LoginFailed(format!("/client_token 回應 {status}"))
+            // 原因照樣帶出來，理由同 `post_token`。
+            GfnError::LoginFailed(format!(
+                "/client_token 回應 {status}；{}",
+                describe_oauth_error(&body)
+            ))
         });
     }
     if !status.is_success() {
@@ -101,18 +105,35 @@ pub async fn get_client_token(
     })
 }
 
+/// 這次 `/token` 走的是哪一條路。
+///
+/// 只影響 4xx 的分類，其餘規則兩條路共用 —— 尤其是「同時有效 token 上限」，
+/// 那個在哪一條路上都是會自己好的暫時狀況，不能變成叫使用者重新登入。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grant {
+    /// 拿既有的 `client_token` 換一顆新的 id_token。
+    Refresh,
+    /// OAuth 授權碼換發。
+    Exchange,
+}
+
 /// 送一次 `/token` 並把回應分類。
 ///
 /// 刷新（`grant_type=…client_token`）與 OAuth 換碼
-/// （`grant_type=authorization_code`）共用這裡：兩條路的錯誤分類規則
-/// 必須一模一樣，否則同一個「同時有效 token 上限」在一邊是會自己好的
-/// 暫時狀況、在另一邊卻變成叫使用者重新登入（而重新登入完全沒有幫助）。
+/// （`grant_type=authorization_code`）共用這裡，但 4xx 的意思**不一樣**：
+/// 刷新被拒代表既有憑證死了（要重新登入），換碼被拒代表這次登入沒成功
+/// （既有憑證，如果有的話，完全沒事）。報錯的對象搞反，使用者會在登入
+/// 途中被告知「需要重新登入」。
+///
+/// 換碼失敗還要把伺服器的 `error_description` 帶出來：這條路的參數是從
+/// 客戶端 bundle 猜的，那句話是唯一能指出哪個參數錯了的線索。
 ///
 /// 4xx 一律不重試（spec §4.3 規則 3）。網路層錯誤回 `Network`，
 /// 由呼叫端決定要不要退避重試 —— 那種請求可能根本沒送達。
 pub async fn post_token<T: serde::de::DeserializeOwned>(
     http: &reqwest::Client,
     auth_base: &str,
+    grant: Grant,
     form: &[(&str, &str)],
 ) -> Result<T, GfnError> {
     let response = http
@@ -129,10 +150,16 @@ pub async fn post_token<T: serde::de::DeserializeOwned>(
     if status.is_client_error() {
         let body = response.text().await.unwrap_or_default();
         // 撞到 token 數量上限不是憑證失效，叫使用者重新登入毫無幫助。
-        return Err(if body.contains(TOO_MANY_TOKENS) {
-            GfnError::TooManyTokens
-        } else {
-            GfnError::NeedsLogin
+        // 這一條在兩條路上都一樣。
+        if body.contains(TOO_MANY_TOKENS) {
+            return Err(GfnError::TooManyTokens);
+        }
+        return Err(match grant {
+            Grant::Refresh => GfnError::NeedsLogin,
+            Grant::Exchange => GfnError::LoginFailed(format!(
+                "/token 回應 {status}；{}",
+                describe_oauth_error(&body)
+            )),
         });
     }
     if !status.is_success() {
@@ -290,6 +317,7 @@ impl TokenManager {
         let body = post_token::<TokenResponse>(
             &self.http,
             &self.auth_base,
+            Grant::Refresh,
             &[
                 ("grant_type", GRANT_TYPE),
                 ("client_token", stored.client_token.as_str()),
@@ -433,6 +461,7 @@ mod tests {
         let problem = post_token::<TokenResponse>(
             &reqwest::Client::new(),
             &server.uri(),
+            Grant::Exchange,
             &[("grant_type", "authorization_code")],
         )
         .await
@@ -464,6 +493,7 @@ mod tests {
         let problem = post_token::<TokenResponse>(
             &reqwest::Client::new(),
             &server.uri(),
+            Grant::Exchange,
             &[("grant_type", "authorization_code")],
         )
         .await
@@ -491,6 +521,7 @@ mod tests {
         let problem = post_token::<TokenResponse>(
             &reqwest::Client::new(),
             &server.uri(),
+            Grant::Exchange,
             &[("grant_type", "authorization_code")],
         )
         .await

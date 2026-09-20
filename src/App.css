@@ -191,6 +191,13 @@ body {
   border-top: 1px solid var(--line);
 }
 
+/* 一排並列的按鈕。和 `.actions` 不一樣：那個是面板最底下的收尾列
+   （`margin-top: auto` 加一條分隔線），擺在內容中間會多出一條沒道理的橫線。 */
+.buttons {
+  display: flex;
+  gap: 8px;
+}
+
 button {
   flex: 1;
   padding: 7px 12px;

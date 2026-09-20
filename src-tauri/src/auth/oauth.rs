@@ -10,12 +10,14 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 
 use crate::auth::jwt;
-use crate::auth::refresh::{get_client_token, post_token, AuthCodeResponse, STARFLEET_CLIENT_ID};
+use crate::auth::refresh::{
+    get_client_token, post_token, AuthCodeResponse, Grant, STARFLEET_CLIENT_ID,
+};
 use crate::auth::store::{StoredSession, CLIENT_TOKEN_LIFETIME_DAYS};
 use crate::error::GfnError;
 
@@ -69,13 +71,24 @@ pub fn redirect_uri(port: u16) -> String {
     format!("http://localhost:{port}")
 }
 
-/// 授權網址。參數順序照抄客戶端 bundle 的樣板。
-pub fn authorize_url(base: &str, redirect_uri: &str, challenge: &str, nonce: &str) -> String {
+/// 授權網址。參數順序照抄客戶端 bundle 的樣板，`state` 是我們自己加的。
+///
+/// bundle 的樣板沒有 `state`。加它不是為了補資安漏洞 —— PKCE 已經擋住
+/// 授權碼注入（攻擊者的 code 綁的是他自己的 challenge，我們拿自己的
+/// verifier 去換必定失敗）—— 而是為了讓迴圈上的監聽器分得出「哪一條
+/// 連線是我這次登入的回呼」。沒有它，任何一條先到的連線都只能用猜的。
+pub fn authorize_url(
+    base: &str,
+    redirect_uri: &str,
+    challenge: &str,
+    nonce: &str,
+    state: &str,
+) -> String {
     let q = |value: &str| utf8_percent_encode(value, QUERY).to_string();
     format!(
         "{base}/authorize?response_type=code&device_id={device_id}&scope={scope}\
          &client_id={client_id}&redirect_uri={redirect}&ui_locales={locales}\
-         &nonce={nonce}&prompt=select_account\
+         &nonce={nonce}&state={state}&prompt=select_account\
          &code_challenge={challenge}&code_challenge_method=S256",
         device_id = q(DEVICE_ID),
         scope = q(SCOPE),
@@ -83,6 +96,7 @@ pub fn authorize_url(base: &str, redirect_uri: &str, challenge: &str, nonce: &st
         redirect = q(redirect_uri),
         locales = q(UI_LOCALES),
         nonce = q(nonce),
+        state = q(state),
         challenge = q(challenge),
     )
 }
@@ -111,16 +125,36 @@ pub async fn bind_first_free() -> Result<(TcpListener, u16), GfnError> {
     )))
 }
 
-/// 從 HTTP 請求首行取出授權碼。
+/// 單一條連線送出請求首行的上限。
+///
+/// 連上卻不說話的連線（連接埠掃描、卡住的代理、瀏覽器開好放著沒用的
+/// 預先連線）不能把整整五分鐘的登入窗口吃光。
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 一條進來的連線是什麼。
+pub enum Callback {
+    /// 我們發起的那次授權的回呼。裡面是授權碼，或 NVIDIA 回報的錯誤。
+    Ours(Result<String, GfnError>),
+    /// 別的東西打進這個埠：本機的其他程式、瀏覽器順手要的 favicon、
+    /// 連上卻不說話的預先連線、或別人那次登入的回呼。
+    ///
+    /// **這不是登入失敗。** 真正的回呼可能還在路上，要繼續等 ——
+    /// 把它當成失敗，等於讓任何一條先到的連線都能把登入打斷，而使用者
+    /// 那時已經在瀏覽器上按完同意，授權碼用掉就沒了。
+    Other,
+}
+
+/// 判斷一條 HTTP 請求首行是不是我們在等的回呼。
 ///
 /// 只解析第一行（`GET /?code=… HTTP/1.1`）就夠了 —— 要的東西都在 query 裡，
 /// 不必把整個請求讀完，也就不必處理 `Content-Length` 之類的東西。
-pub fn parse_callback(request_line: &str) -> Result<String, GfnError> {
+pub fn parse_callback(request_line: &str, expected_state: &str) -> Callback {
     let target = request_line.split_whitespace().nth(1).unwrap_or("/");
     let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
 
     let mut code = None;
     let mut error = None;
+    let mut state = None;
     for pair in query.split('&') {
         let Some((key, value)) = pair.split_once('=') else {
             continue;
@@ -129,58 +163,98 @@ pub fn parse_callback(request_line: &str) -> Result<String, GfnError> {
         match key {
             "code" => code = Some(decoded),
             "error" => error = Some(decoded),
+            "state" => state = Some(decoded),
             _ => {}
         }
     }
 
+    // state 有帶就一定要對得上。沒帶就不比 —— 和 `exchange` 裡的 nonce
+    // 同樣的取捨：整份授權參數都是從 bundle 猜的，不確定 NVIDIA 一定會
+    // 回傳它，不能因此擋下一次本來能用的登入。
+    if state.is_some_and(|state| state != expected_state) {
+        return Callback::Other;
+    }
+
     // 先看 error：兩個都在時，錯誤才是實話。
     if let Some(error) = error {
-        return Err(GfnError::LoginFailed(format!("NVIDIA 回報 {error}")));
+        return Callback::Ours(Err(GfnError::LoginFailed(format!("NVIDIA 回報 {error}"))));
     }
-    code.filter(|code| !code.is_empty())
-        .ok_or_else(|| GfnError::LoginFailed("回呼沒有帶授權碼".into()))
+    match code.filter(|code| !code.is_empty()) {
+        Some(code) => Callback::Ours(Ok(code)),
+        // 兩個都沒有就根本不是回呼。
+        None => Callback::Other,
+    }
+}
+
+/// 讀出一條連線的請求首行，讀不到就放棄這條連線。
+///
+/// 回傳 `None` 代表這條連線不值得再等：逾時、斷線、或對方什麼都沒送
+/// 就關掉了。呼叫端該去接下一條，而不是把它當成登入失敗。
+async fn read_request_line(stream: &mut TcpStream, timeout: Duration) -> Option<String> {
+    let mut line = String::new();
+    let read = tokio::time::timeout(timeout, BufReader::new(stream).read_line(&mut line)).await;
+
+    match read {
+        // 0 bytes 是對方連上就關掉，沒有首行可言。
+        Ok(Ok(0)) | Ok(Err(_)) | Err(_) => None,
+        Ok(Ok(_)) => Some(line),
+    }
+}
+
+/// 回一頁給瀏覽器，然後把連線收掉。
+///
+/// 不管成不成功都要回：瀏覽器停在「無法連線」的錯誤畫面上，使用者
+/// 會以為是自己網路有問題。
+async fn respond(stream: &mut TcpStream, status: &str, body: &str) {
+    // `body.len()` 在 Rust 是 UTF-8 的位元組數，正好就是 Content-Length
+    // 要的東西。不要改成 `chars().count()`，中文會讓長度對不上。
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.shutdown().await;
 }
 
 /// 等瀏覽器把授權碼送回來，然後關掉監聽器。
 ///
-/// 收一個請求就結束。瀏覽器可能還會來要 `/favicon.ico`，但那是在回應送出
-/// 之後的另一條連線，這時監聽器已經收掉了，不影響任何事。
-pub async fn wait_for_code(listener: TcpListener, timeout: Duration) -> Result<String, GfnError> {
-    let accept = async {
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .map_err(|e| GfnError::LoginFailed(format!("接受回呼連線失敗：{e}")))?;
+/// **接到我們的回呼為止**，不是接到第一條連線為止。迴圈上還有別的東西
+/// 會打進來 —— 瀏覽器的預先連線、favicon、本機其他程式 —— 收一條就收工
+/// 的話，那些都會把使用者剛按完同意換來的授權碼擠掉，而那個碼用掉就沒了。
+pub async fn wait_for_code(
+    listener: TcpListener,
+    timeout: Duration,
+    expected_state: String,
+) -> Result<String, GfnError> {
+    let serve = async {
+        loop {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .map_err(|e| GfnError::LoginFailed(format!("接受回呼連線失敗：{e}")))?;
 
-        let mut request_line = String::new();
-        BufReader::new(&mut stream)
-            .read_line(&mut request_line)
-            .await
-            .map_err(|e| GfnError::LoginFailed(format!("讀取回呼失敗：{e}")))?;
+            let Some(request_line) = read_request_line(&mut stream, READ_TIMEOUT).await else {
+                continue;
+            };
 
-        let result = parse_callback(&request_line);
-
-        // 不管成不成功都要回一頁：瀏覽器停在「無法連線」的錯誤畫面上，
-        // 使用者會以為是自己網路有問題。
-        let body = if result.is_ok() {
-            DONE_PAGE
-        } else {
-            FAILED_PAGE
-        };
-        // `body.len()` 在 Rust 是 UTF-8 的位元組數，正好就是 Content-Length
-        // 要的東西。不要改成 `chars().count()`，中文會讓長度對不上。
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
-             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let _ = stream.write_all(response.as_bytes()).await;
-        let _ = stream.shutdown().await;
-
-        result
+            match parse_callback(&request_line, &expected_state) {
+                Callback::Ours(result) => {
+                    let body = if result.is_ok() {
+                        DONE_PAGE
+                    } else {
+                        FAILED_PAGE
+                    };
+                    respond(&mut stream, "200 OK", body).await;
+                    return result;
+                }
+                // 不是我們要的。回個 404 把連線收乾淨，繼續等。
+                Callback::Other => respond(&mut stream, "404 Not Found", FAILED_PAGE).await,
+            }
+        }
     };
 
-    tokio::time::timeout(timeout, accept)
+    tokio::time::timeout(timeout, serve)
         .await
         .map_err(|_| GfnError::LoginFailed("等了 5 分鐘還是沒有收到回應，登入取消".into()))?
 }
@@ -204,6 +278,7 @@ pub async fn exchange(
     let auth = post_token::<AuthCodeResponse>(
         http,
         auth_base,
+        Grant::Exchange,
         &[
             ("grant_type", "authorization_code"),
             ("code", code),
@@ -299,6 +374,7 @@ mod tests {
             &redirect_uri(2259),
             "CHALLENGE",
             "NONCE",
+            "STATE",
         );
 
         assert!(url.starts_with("https://login.nvidia.com/authorize?"));
@@ -307,6 +383,8 @@ mod tests {
         assert!(url.contains("code_challenge=CHALLENGE"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("nonce=NONCE"));
+        // `state` 讓迴圈分得出哪一條連線是自己這次登入的回呼（RFC 6749 §4.1.1）。
+        assert!(url.contains("state=STATE"));
         assert!(url.contains("prompt=select_account"));
         assert!(url.contains(&format!("client_id={STARFLEET_CLIENT_ID}")));
         // scope 裡的 tk_client 就是拿到 90 天 client_token 的關鍵。
@@ -321,52 +399,109 @@ mod tests {
     /// 而症狀只會是一個看不出原因的 400。
     #[test]
     fn unreserved_characters_are_left_alone() {
-        let url = authorize_url("https://x", "http://localhost:2259", RFC_CHALLENGE, "N-1_2");
+        let url = authorize_url(
+            "https://x",
+            "http://localhost:2259",
+            RFC_CHALLENGE,
+            "N-1_2",
+            "S-3_4",
+        );
 
         assert!(url.contains(&format!("code_challenge={RFC_CHALLENGE}")));
         assert!(url.contains("nonce=N-1_2"));
+        assert!(url.contains("state=S-3_4"));
+    }
+
+    /// `Callback::Ours` 裡的那個 Result，方便斷言。
+    fn ours(request_line: &str, state: &str) -> Result<String, GfnError> {
+        match parse_callback(request_line, state) {
+            Callback::Ours(result) => result,
+            Callback::Other => panic!("這條應該被當成我們的回呼：{request_line}"),
+        }
     }
 
     #[test]
     fn parses_the_code_out_of_the_callback() {
-        let code = parse_callback("GET /?code=ABC123&state=x HTTP/1.1").unwrap();
-        assert_eq!(code, "ABC123");
+        assert_eq!(
+            ours("GET /?code=ABC123&state=S1 HTTP/1.1", "S1").unwrap(),
+            "ABC123"
+        );
     }
 
     #[test]
     fn percent_decodes_the_code() {
-        let code = parse_callback("GET /?code=A%2FB HTTP/1.1").unwrap();
-        assert_eq!(code, "A/B");
+        assert_eq!(
+            ours("GET /?code=A%2FB&state=S1 HTTP/1.1", "S1").unwrap(),
+            "A/B"
+        );
     }
 
     /// 使用者在 NVIDIA 的頁面上按了取消。這不是程式壞掉，
     /// 要講清楚是誰拒絕的。
     #[test]
     fn reports_the_error_the_callback_carries() {
-        let problem = parse_callback("GET /?error=access_denied HTTP/1.1").unwrap_err();
+        let problem = ours("GET /?error=access_denied&state=S1 HTTP/1.1", "S1").unwrap_err();
         assert!(problem.to_string().contains("access_denied"));
     }
 
-    /// 有人直接用瀏覽器打了這個埠，不是 NVIDIA 的回呼。
+    /// 有人直接用瀏覽器打了這個埠，或瀏覽器順手來要 favicon。
+    /// 這不是登入失敗 —— 真正的回呼可能還在路上，要繼續等。
     #[test]
-    fn a_callback_without_a_code_is_an_error() {
-        assert!(parse_callback("GET / HTTP/1.1").is_err());
+    fn a_request_without_a_code_is_somebody_else() {
+        assert!(matches!(
+            parse_callback("GET / HTTP/1.1", "S1"),
+            Callback::Other
+        ));
+        assert!(matches!(
+            parse_callback("GET /favicon.ico HTTP/1.1", "S1"),
+            Callback::Other
+        ));
+    }
+
+    /// 連線連上了卻一個字都沒送（瀏覽器的預先連線、本機的連接埠掃描）。
+    /// 空字串不能被當成「登入失敗」，否則真正的回呼永遠等不到。
+    #[test]
+    fn an_empty_request_line_is_somebody_else() {
+        assert!(matches!(parse_callback("", "S1"), Callback::Other));
+    }
+
+    /// `state` 對不上就不是我們發起的那次授權。丟掉，繼續等。
+    #[test]
+    fn a_callback_for_somebody_elses_login_is_ignored() {
+        assert!(matches!(
+            parse_callback("GET /?code=ABC123&state=OTHER HTTP/1.1", "S1"),
+            Callback::Other
+        ));
+    }
+
+    /// NVIDIA 不一定會回傳 `state` —— 整份授權參數都是從 bundle 猜的。
+    /// 和 `nonce` 同樣的取捨：沒有就不比，不能因此擋下一次能用的登入。
+    #[test]
+    fn a_callback_without_a_state_is_still_ours() {
+        assert_eq!(ours("GET /?code=ABC123 HTTP/1.1", "S1").unwrap(), "ABC123");
+    }
+
+    /// 送一行請求進去，把回應讀回來。
+    async fn request(port: u16, line: &str) -> String {
+        let mut client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        client
+            .write_all(format!("{line}\r\nHost: localhost\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.unwrap();
+        response
     }
 
     /// 端到端：真的綁一個埠、真的連進去、真的把授權碼拿出來。
     /// 不出本機，不碰網路。
     #[tokio::test]
     async fn receives_a_code_over_the_loopback() {
+        let _ports = crate::loopback_ports().await;
         let (listener, port) = bind_first_free().await.unwrap();
-        let waiting = tokio::spawn(wait_for_code(listener, LOGIN_TIMEOUT));
+        let waiting = tokio::spawn(wait_for_code(listener, LOGIN_TIMEOUT, "S1".into()));
 
-        let mut client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        client
-            .write_all(b"GET /?code=ABC123 HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            .await
-            .unwrap();
-        let mut response = String::new();
-        client.read_to_string(&mut response).await.unwrap();
+        let response = request(port, "GET /?code=ABC123&state=S1 HTTP/1.1").await;
 
         assert_eq!(waiting.await.unwrap().unwrap(), "ABC123");
         // 瀏覽器那一頁要告訴使用者可以關掉了，不能留一片空白。
@@ -374,12 +509,71 @@ mod tests {
         assert!(response.contains("可以關掉這個分頁"));
     }
 
+    /// 這是這個迴圈存在的理由：本機上任何一條先到的連線都不能把登入吃掉。
+    /// 只接一條的寫法在這裡會回「回呼沒有帶授權碼」，而使用者已經在
+    /// 瀏覽器上按完同意 —— 那個授權碼就這樣沒了，只能整個重來。
+    #[tokio::test]
+    async fn another_local_request_does_not_consume_the_login() {
+        let _ports = crate::loopback_ports().await;
+        let (listener, port) = bind_first_free().await.unwrap();
+        let waiting = tokio::spawn(wait_for_code(listener, LOGIN_TIMEOUT, "S1".into()));
+
+        let ignored = request(port, "GET /favicon.ico HTTP/1.1").await;
+        let accepted = request(port, "GET /?code=ABC123&state=S1 HTTP/1.1").await;
+
+        assert_eq!(waiting.await.unwrap().unwrap(), "ABC123");
+        assert!(ignored.contains("404"), "{ignored}");
+        assert!(accepted.contains("200 OK"), "{accepted}");
+    }
+
+    /// 連上就馬上關掉、一個字都沒送。瀏覽器的預先連線就長這樣。
+    #[tokio::test]
+    async fn a_connection_that_says_nothing_does_not_consume_the_login() {
+        let _ports = crate::loopback_ports().await;
+        let (listener, port) = bind_first_free().await.unwrap();
+        let waiting = tokio::spawn(wait_for_code(listener, LOGIN_TIMEOUT, "S1".into()));
+
+        drop(TcpStream::connect(("127.0.0.1", port)).await.unwrap());
+        request(port, "GET /?code=ABC123&state=S1 HTTP/1.1").await;
+
+        assert_eq!(waiting.await.unwrap().unwrap(), "ABC123");
+    }
+
+    /// 別人那次登入的回呼打進我們的埠。丟掉，繼續等自己的。
+    #[tokio::test]
+    async fn a_callback_with_the_wrong_state_does_not_consume_the_login() {
+        let _ports = crate::loopback_ports().await;
+        let (listener, port) = bind_first_free().await.unwrap();
+        let waiting = tokio::spawn(wait_for_code(listener, LOGIN_TIMEOUT, "S1".into()));
+
+        request(port, "GET /?code=NOPE&state=OTHER HTTP/1.1").await;
+        request(port, "GET /?code=ABC123&state=S1 HTTP/1.1").await;
+
+        assert_eq!(waiting.await.unwrap().unwrap(), "ABC123");
+    }
+
+    /// 連上卻不送東西、也不關 —— 連接埠掃描、卡住的代理。一條這種連線
+    /// 不能把整整五分鐘的登入窗口吃光，所以每條連線各自有讀取上限。
+    #[tokio::test]
+    async fn a_silent_connection_gives_up_on_its_own() {
+        let _ports = crate::loopback_ports().await;
+        let (listener, port) = bind_first_free().await.unwrap();
+        let accepting = tokio::spawn(async move { listener.accept().await.unwrap().0 });
+        let _client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut server = accepting.await.unwrap();
+
+        let line = read_request_line(&mut server, Duration::from_millis(50)).await;
+
+        assert_eq!(line, None);
+    }
+
     /// 使用者開了登入頁就跑去做別的事。不能永遠掛著一個監聽埠。
     #[tokio::test]
     async fn gives_up_when_nobody_comes_back() {
+        let _ports = crate::loopback_ports().await;
         let (listener, _) = bind_first_free().await.unwrap();
 
-        let problem = wait_for_code(listener, Duration::from_millis(50))
+        let problem = wait_for_code(listener, Duration::from_millis(50), "S1".into())
             .await
             .unwrap_err();
 
@@ -599,5 +793,86 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(problem, GfnError::TooManyTokens));
+    }
+
+    /// 換碼被拒是**登入途中**失敗，不是既有憑證被拒。報成「需要重新登入」
+    /// 等於叫使用者去做他此刻正在做的事。
+    ///
+    /// 而且 `error_description` 一定要帶出來：這個模組的參數是從 bundle
+    /// 猜的，第一次實測若回 400，那句話就是唯一能指出「哪個參數錯了」的
+    /// 線索。丟掉它就只能一次次重試猜，每次燒一顆 token。
+    #[tokio::test]
+    async fn a_rejected_exchange_says_which_parameter_the_server_refused() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_grant",
+                "error_description": "code_verifier does not match code_challenge",
+            })))
+            .mount(&server)
+            .await;
+
+        let problem = exchange(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "CODE",
+            &redirect_uri(2259),
+            "VERIFIER",
+            "N1",
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(problem, GfnError::LoginFailed(_)), "{problem:?}");
+        let message = problem.to_string();
+        assert!(message.contains("invalid_grant"), "{message}");
+        assert!(
+            message.contains("code_verifier does not match code_challenge"),
+            "{message}"
+        );
+    }
+
+    /// 登入的第二段同理。這一步已經分對了類（`LoginFailed`），但同樣
+    /// 把伺服器講的原因丟掉了。
+    #[tokio::test]
+    async fn a_rejected_client_token_call_says_why_too() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "AT",
+                "expires_in": 3600,
+                "id_token": exchange_jwt(),
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/client_token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_scope",
+                "error_description": "tk_client was not granted",
+            })))
+            .mount(&server)
+            .await;
+
+        let problem = exchange(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "CODE",
+            &redirect_uri(2259),
+            "VERIFIER",
+            "N1",
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(problem, GfnError::LoginFailed(_)), "{problem:?}");
+        assert!(
+            problem.to_string().contains("tk_client was not granted"),
+            "{problem}"
+        );
     }
 }

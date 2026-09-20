@@ -39,6 +39,9 @@ pub struct PanelData {
     pub client_token_expires_at: Option<DateTime<Utc>>,
     /// 該不該顯示「把系統匣圖示拖出溢位區」的提示（spec §7.1）。
     pub show_tray_hint: bool,
+    /// 有一次 OAuth 登入正在進行。開瀏覽器會把面板收起來，面板回來時
+    /// 要靠這個才知道「還在等」，而不是又給一顆可以按的登入鈕。
+    pub login_pending: bool,
 }
 
 #[tauri::command]
@@ -68,6 +71,7 @@ pub fn panel_data(state: &AppState) -> PanelData {
         // —— 前端能拿到的只有 user agent，那是出了名的不可靠。
         show_tray_hint: cfg!(target_os = "windows")
             && !store::load_ui_state(&state.ui_state_path()).tray_hint_dismissed,
+        login_pending: state.login_pending.load(Ordering::SeqCst),
     }
 }
 
@@ -260,6 +264,22 @@ async fn finish_link<R: Runtime>(
     Ok(())
 }
 
+/// 中止進行中的登入。沒有登入在跑時是個沒有作用的空操作。
+#[tauri::command]
+pub fn cancel_login_command(state: State<'_, Arc<AppState>>) {
+    cancel_login(state.inner());
+}
+
+/// 同上，不碰 `AppHandle`，可以直接測。
+///
+/// `send_modify` 而不是 `send`：即使此刻沒有人在聽也要留下新的世代號，
+/// 不然「按取消」和「登入流程開始等」撞在一起時，訊號會被當成沒人要而丟掉。
+pub fn cancel_login(state: &AppState) {
+    state
+        .login_cancel
+        .send_modify(|generation| *generation += 1);
+}
+
 /// 走 localhost 迴圈 OAuth 登入（spec §4.1 主要路徑）。
 ///
 /// 錯誤走**兩條路**：寫進 `last_error`（面板上看得到），同時往外丟
@@ -289,7 +309,7 @@ pub async fn start_login(app: AppHandle, state: State<'_, Arc<AppState>>) -> Res
     finish_link(&app, state, result).await
 }
 
-/// 登入流程的前半段：綁迴圈埠、產生 PKCE 與 nonce、組出授權網址。
+/// 登入流程的前半段：綁迴圈埠、產生 PKCE、nonce 與 state、組出授權網址。
 ///
 /// 分成兩半是因為中間那一步要開瀏覽器（需要 `AppHandle`），
 /// 而前後兩半都是可以離線測試的。
@@ -300,20 +320,58 @@ pub struct Pending {
     pub redirect_uri: String,
     pub verifier: String,
     pub nonce: String,
+    /// 回呼要帶回來的識別碼，讓迴圈分得出哪一條連線是這次登入的。
+    pub state: String,
+    /// 取消訊號。在這裡就訂閱好，這樣「按取消」永遠不會早於「開始聽」。
+    pub cancel: tokio::sync::watch::Receiver<u64>,
+    /// 活著就代表「有一次登入正在進行」，丟掉就歸位。
+    pub pending: LoginGuard,
+}
+
+/// `login_pending` 的看守。
+///
+/// 用 drop 而不是在每條 return 路徑上手動歸位：`start_login` 在瀏覽器
+/// 開不起來時會直接 return，把 `Pending` 丟掉就走 —— 那條路很容易在
+/// 日後改動時被漏掉，而漏掉的後果是登入鈕從此按不下去。
+#[derive(Debug)]
+pub struct LoginGuard(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for LoginGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 pub async fn begin_login(state: &AppState) -> Result<Pending, String> {
+    // compare_exchange 而不是先讀再寫：兩次點擊同時進來時，只有一次能
+    // 把旗標從 false 翻成 true。
+    if state
+        .login_pending
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err(record_error(
+            state,
+            "已經有一次登入在進行中。完成瀏覽器上那一次，或先取消它。".to_string(),
+        ));
+    }
+    // 從這一行之後，任何一條 return 路徑都會把旗標歸位。
+    let pending = LoginGuard(Arc::clone(&state.login_pending));
+
     let prepare = async {
         let (listener, port) = oauth::bind_first_free().await?;
         let redirect_uri = oauth::redirect_uri(port);
         let verifier = oauth::verifier()?;
-        // nonce 的需求和 verifier 一模一樣：夠長、不可預測、URL 安全。
+        // nonce 與 state 的需求都和 verifier 一模一樣：夠長、不可預測、
+        // URL 安全。三者各自獨立產生，不能共用同一個值。
         let nonce = oauth::verifier()?;
+        let callback_state = oauth::verifier()?;
         let url = oauth::authorize_url(
             &state.auth_base,
             &redirect_uri,
             &oauth::challenge(&verifier),
             &nonce,
+            &callback_state,
         );
         Ok::<_, GfnError>(Pending {
             listener,
@@ -321,6 +379,9 @@ pub async fn begin_login(state: &AppState) -> Result<Pending, String> {
             redirect_uri,
             verifier,
             nonce,
+            state: callback_state,
+            cancel: state.login_cancel.subscribe(),
+            pending,
         })
     };
     prepare
@@ -329,16 +390,32 @@ pub async fn begin_login(state: &AppState) -> Result<Pending, String> {
 }
 
 /// 後半段：等授權碼回來、換成憑證、寫進金鑰儲存區。
+///
+/// 全程可取消。取消時 `run` 整個被丟掉，連同它持有的監聽器 ——
+/// 那個埠當場就還回去，下一次登入還綁得到同一個。
 pub async fn finish_login(state: &AppState, pending: Pending) -> Result<(), String> {
+    let Pending {
+        listener,
+        redirect_uri,
+        verifier,
+        nonce,
+        state: callback_state,
+        mut cancel,
+        // 綁起來，不要讓 `..` 當場把它丟掉 —— 那樣登入才剛開始，旗標
+        // 就已經歸位了。它要活到這個函式結束。
+        pending: _pending,
+        ..
+    } = pending;
+
     let run = async {
-        let code = oauth::wait_for_code(pending.listener, oauth::LOGIN_TIMEOUT).await?;
+        let code = oauth::wait_for_code(listener, oauth::LOGIN_TIMEOUT, callback_state).await?;
         let (session, id_token) = oauth::exchange(
             &state.http,
             &state.auth_base,
             &code,
-            &pending.redirect_uri,
-            &pending.verifier,
-            &pending.nonce,
+            &redirect_uri,
+            &verifier,
+            &nonce,
             Utc::now(),
         )
         .await?;
@@ -352,7 +429,14 @@ pub async fn finish_login(state: &AppState, pending: Pending) -> Result<(), Stri
         Ok::<_, GfnError>(())
     };
 
-    match run.await {
+    let outcome = tokio::select! {
+        result = run => result,
+        // 取消是使用者自己按的，不是故障 —— 往外丟讓按鈕旁邊知道就好，
+        // 不要在面板上留一行紅字。
+        _ = cancel.changed() => return Err("登入已取消".to_string()),
+    };
+
+    match outcome {
         Ok(()) => {
             reset_state(state);
             Ok(())
@@ -408,6 +492,10 @@ pub async fn link_manual(state: &AppState, data: &str) -> Result<(), String> {
 /// 寫入新憑證並清掉所有舊狀態。舊帳號還沒過期的 id_token 由
 /// `replace_credentials` 一併丟棄，否則畫面上會顯示錯的人的額度。
 pub async fn link_account(state: &AppState, session: ImportedSession) -> Result<(), String> {
+    // 登入途中改走匯入這條路，就是放棄那次登入。不收掉的話，五分鐘後
+    // 才回來的那次登入會把剛匯入的憑證蓋掉，而使用者早就忘了有這回事。
+    cancel_login(state);
+
     state
         .tokens
         .replace_credentials(session.into())
@@ -704,9 +792,58 @@ mod tests {
         assert!(history_lines(&h.state).is_empty());
     }
 
+    /// 面板要看得到「有一次登入正在進行」。
+    ///
+    /// 前端自己記這件事不夠：開瀏覽器一定會讓這個 flyout 失焦收起來，
+    /// 而面板回來時（或任何一次重新載入）本地旗標就沒了，畫面會變回
+    /// 「登入 NVIDIA 帳號」可以按 —— 於是又開一次。事實放在後端。
+    #[tokio::test]
+    async fn the_panel_can_see_that_a_login_is_in_progress() {
+        let _ports = crate::loopback_ports().await;
+        let h = harness(false).await;
+        assert!(!panel_data(&h.state).login_pending);
+
+        let pending = begin_login(&h.state).await.unwrap();
+
+        assert!(panel_data(&h.state).login_pending);
+
+        drop(pending);
+        // 旗標跟著 `Pending` 走，所以中途放棄（例如瀏覽器開不起來就
+        // 直接 return）也不會讓它卡在 true。
+        assert!(!panel_data(&h.state).login_pending);
+    }
+
+    /// 連按兩次登入只會多綁一個埠、多開一個分頁，然後兩邊搶著寫憑證。
+    /// 前端擋一次，後端也要擋 —— 前端那層在面板重新載入後就沒了。
+    #[tokio::test]
+    async fn a_second_login_is_refused_while_the_first_is_pending() {
+        let _ports = crate::loopback_ports().await;
+        let h = harness(false).await;
+        let _first = begin_login(&h.state).await.unwrap();
+
+        let problem = begin_login(&h.state).await.unwrap_err();
+
+        assert!(problem.contains("已經有一次登入"), "{problem}");
+    }
+
+    /// 上一次登入結束後，下一次要能正常開始。
+    #[tokio::test]
+    async fn a_login_can_start_again_once_the_last_one_is_done() {
+        let _ports = crate::loopback_ports().await;
+        let h = harness(false).await;
+        let first = begin_login(&h.state).await.unwrap();
+        let state = h.state.clone();
+        let finishing = tokio::spawn(async move { finish_login(&state, first).await });
+        cancel_login(&h.state);
+        let _ = finishing.await.unwrap();
+
+        assert!(begin_login(&h.state).await.is_ok());
+    }
+
     /// 埠全被占用時（GFN 客戶端正在登入）要講人話，而且不能動到既有憑證。
     #[tokio::test]
     async fn a_login_that_cannot_bind_leaves_the_credentials_alone() {
+        let _ports = crate::loopback_ports().await;
         let h = harness(true).await;
         let mut held = Vec::new();
         for port in crate::auth::oauth::PORTS {
@@ -730,6 +867,7 @@ mod tests {
     /// 不然測試與正式環境會打到不同的地方。
     #[tokio::test]
     async fn the_authorize_url_points_at_the_configured_endpoint() {
+        let _ports = crate::loopback_ports().await;
         let h = harness(false).await;
 
         let pending = begin_login(&h.state).await.unwrap();
@@ -737,8 +875,145 @@ mod tests {
         assert!(pending
             .url
             .starts_with(&format!("{}/authorize?", h.server.uri())));
-        // verifier 與 nonce 各自獨立產生，不能是同一個值。
+        // verifier、nonce 與 state 各自獨立產生，不能是同一個值。
         assert_ne!(pending.verifier, pending.nonce);
+        assert_ne!(pending.nonce, pending.state);
+        assert_ne!(pending.verifier, pending.state);
+    }
+
+    /// 扮演瀏覽器：連上迴圈埠，送一行回呼進去，把回應讀完。
+    ///
+    /// 讀完才回傳很重要 —— 不讀的話這一端可能先關掉連線，
+    /// 監聽器那邊就變成寫入失敗，測試會偶發地紅。
+    async fn send_callback(port: u16, request_line: &str) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        client
+            .write_all(format!("{request_line}\r\nHost: localhost\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.unwrap();
+    }
+
+    /// 造一顆帶著指定 nonce 的 id_token。exp 在西元 2286 年。
+    fn id_token_with_nonce(nonce: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let claims = format!(r#"{{"exp":9999999999,"sub":"SUB456","nonce":"{nonce}"}}"#);
+        format!(
+            "eyJhbGciOiJSUzI1NiJ9.{}.sig",
+            URL_SAFE_NO_PAD.encode(claims)
+        )
+    }
+
+    /// 登入主路徑的端到端：授權碼從迴圈埠進來，憑證落進金鑰儲存區。
+    ///
+    /// `oauth::exchange` 自己測得很細，但那一層測不到接線 —— 換來的
+    /// id_token 有沒有真的被收下、`reset_state` 有沒有跑。兩段 mock
+    /// 各限一次，順便證明沒有多打一趟。
+    #[tokio::test]
+    async fn a_login_stores_the_credential_it_just_earned() {
+        let _ports = crate::loopback_ports().await;
+        let h = harness(false).await;
+        let pending = begin_login(&h.state).await.unwrap();
+        let port = pending.listener.local_addr().unwrap().port();
+        // 先製造一點要被清掉的舊狀態，證明 `reset_state` 有跑。
+        *h.state.last_error.lock().unwrap() = Some("上一次的錯誤".into());
+        h.state.needs_login.store(true, Ordering::SeqCst);
+
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "AT",
+                "expires_in": 3600,
+                "id_token": id_token_with_nonce(&pending.nonce),
+            })))
+            .expect(1)
+            .mount(&h.server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/client_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "client_token": "CT-FRESH",
+                "expires_in": 7_776_000,
+            })))
+            .expect(1)
+            .mount(&h.server)
+            .await;
+
+        let callback = format!("GET /?code=ABC123&state={} HTTP/1.1", pending.state);
+        let state = h.state.clone();
+        let finishing = tokio::spawn(async move { finish_login(&state, pending).await });
+        send_callback(port, &callback).await;
+
+        finishing.await.unwrap().unwrap();
+
+        assert_eq!(h.store.load().unwrap().unwrap().client_token, "CT-FRESH");
+        assert_eq!(last_error(&h.state), None);
+        assert!(!needs_login(&h.state));
+        // 換碼附的那顆 id_token 要被收下。沒收下的話下面這一行會再打一次
+        // `/token`，而 mock 的 `expect(1)` 就會在 drop 時炸掉 —— NVIDIA
+        // 限制同時有效的 access_token 數量，剛登入完最不該多鑄一顆。
+        h.state.tokens.ensure_token().await.unwrap();
+    }
+
+    /// 使用者關掉瀏覽器分頁、改變主意。不能讓他盯著一個沒反應的面板等滿
+    /// 五分鐘 —— 備援的「從本機匯入」就在同一個畫面上。
+    #[tokio::test]
+    async fn cancelling_a_login_gives_up_without_waiting_for_the_timeout() {
+        let _ports = crate::loopback_ports().await;
+        let h = harness(false).await;
+        let pending = begin_login(&h.state).await.unwrap();
+        let port = pending.listener.local_addr().unwrap().port();
+        let state = h.state.clone();
+        let started = std::time::Instant::now();
+        let finishing = tokio::spawn(async move { finish_login(&state, pending).await });
+
+        cancel_login(&h.state);
+
+        let problem = finishing.await.unwrap().unwrap_err();
+        assert!(problem.contains("取消"), "{problem}");
+        // 重點就是這一條：五分鐘的逾時還在跑，但取消不必等它。
+        assert!(started.elapsed() < oauth::LOGIN_TIMEOUT, "{started:?}");
+        // 監聽器住在被丟掉的那個 future 裡，所以埠當場就還回去了 ——
+        // 不還的話重試會被推到清單上的下一個埠，連按兩次就用掉兩個。
+        assert!(tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .is_ok());
+    }
+
+    /// 取消是使用者自己按的，不是故障。面板上不該留一行紅字。
+    #[tokio::test]
+    async fn cancelling_a_login_leaves_no_error_on_the_panel() {
+        let _ports = crate::loopback_ports().await;
+        let h = harness(false).await;
+        let pending = begin_login(&h.state).await.unwrap();
+        let state = h.state.clone();
+        let finishing = tokio::spawn(async move { finish_login(&state, pending).await });
+
+        cancel_login(&h.state);
+        let _ = finishing.await.unwrap();
+
+        assert_eq!(last_error(&h.state), None);
+    }
+
+    /// 登入途中改走匯入那條路。兩條路都會寫憑證，不能讓五分鐘後才回來的
+    /// 那次登入把剛匯入的蓋掉 —— 於是匯入順手把進行中的登入收掉。
+    #[tokio::test]
+    async fn importing_while_a_login_is_pending_cancels_it() {
+        let _ports = crate::loopback_ports().await;
+        let h = harness(false).await;
+        let pending = begin_login(&h.state).await.unwrap();
+        let state = h.state.clone();
+        let finishing = tokio::spawn(async move { finish_login(&state, pending).await });
+
+        link_manual(&h.state, SAMPLE_DATA).await.unwrap();
+
+        assert!(finishing.await.unwrap().is_err());
+        assert_eq!(h.store.load().unwrap().unwrap().client_token, "CT123");
     }
 
     #[test]

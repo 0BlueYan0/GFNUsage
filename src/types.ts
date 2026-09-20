@@ -77,4 +77,11 @@ export interface PanelData {
   clientTokenExpiresAt: string | null;
   /** 該不該顯示「把系統匣圖示拖出溢位區」的提示。只有 Windows 會是 true。 */
   showTrayHint: boolean;
+  /**
+   * 有一次 OAuth 登入正在進行。
+   *
+   * 由後端說了算，不由前端自己記：開瀏覽器一定會讓面板失焦收起來，
+   * 本地旗標撐不過那一下。
+   */
+  loginPending: boolean;
 }

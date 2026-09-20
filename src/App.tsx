@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 import Banners from "./Banners";
+import SignIn from "./SignIn";
 import { formatCountdown, formatHours, formatResetAt, percentUsed } from "./format";
 import Pace from "./Pace";
 import ScheduleForm from "./Schedule";
@@ -111,82 +112,6 @@ function Quota({
   );
 }
 
-function SignIn({
-  busy,
-  error,
-  needsLogin,
-  banners,
-  onLogin,
-  onImportLocal,
-  onImportManual,
-}: {
-  busy: boolean;
-  error: string | null;
-  needsLogin: boolean;
-  banners: ReactNode;
-  onLogin: () => void;
-  onImportLocal: () => void;
-  onImportManual: (data: string) => void;
-}) {
-  const [pasted, setPasted] = useState("");
-
-  // 內容比主畫面長，而 `.panel` 是固定高度又切掉溢出的部分。
-  return (
-    <div className="panel panel--scroll">
-      <header className="panel__header">
-        <h1 className="panel__title">
-          {needsLogin ? "重新連結 NVIDIA 帳號" : "連結 NVIDIA 帳號"}
-        </h1>
-      </header>
-
-      {banners}
-
-      {needsLogin && (
-        <p className="note">
-          NVIDIA 不再接受目前的憑證。重新登入一次就好。
-        </p>
-      )}
-
-      <p className="note">
-        用 NVIDIA 帳號登入。瀏覽器會開起來，登入完成後這個面板會自己回來。
-      </p>
-
-      <button className="primary" disabled={busy} onClick={onLogin}>
-        {busy ? "等待瀏覽器…" : "登入 NVIDIA 帳號"}
-      </button>
-
-      <p className="note">
-        或者，從這台電腦已安裝的 GeForce NOW 匯入憑證。沒有安裝的話，
-        到有安裝的機器上取出 <code>sharedstorage.json</code> 裡
-        <code>starfleetSession.data</code> 的值貼到下面。
-      </p>
-
-      <button disabled={busy} onClick={onImportLocal}>
-        從本機 GeForce NOW 匯入
-      </button>
-
-      <textarea
-        rows={4}
-        value={pasted}
-        spellCheck={false}
-        placeholder="或貼上 starfleetSession.data 的值"
-        onChange={(e) => setPasted(e.target.value)}
-      />
-
-      {error && <p className="alert">{error}</p>}
-
-      <div className="actions">
-        <button
-          disabled={busy || pasted.trim() === ""}
-          onClick={() => onImportManual(pasted.trim())}
-        >
-          使用貼上的憑證
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export default function App() {
   const [data, setData] = useState<PanelData | null>(null);
   const [busy, setBusy] = useState(false);
@@ -194,6 +119,10 @@ export default function App() {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   // 匯入之後用它強迫設定表單重新掛載，丟掉已經過期的草稿。
   const [formKey, setFormKey] = useState(0);
+  // 按下登入到後端確認之間的樂觀旗標，純粹為了當場就有反應。
+  // 「到底有沒有登入在跑」以後端的 `loginPending` 為準 —— 開瀏覽器會把
+  // 面板收起來，本地旗標撐不過那一下。
+  const [starting, setStarting] = useState(false);
 
   const load = useCallback(async () => {
     setData(await invoke<PanelData>("get_snapshot"));
@@ -242,6 +171,26 @@ export default function App() {
   // `run()` 的 load() 會取回來顯示，所以這裡吞掉就好。
   const runQuietly = (task: () => Promise<unknown>) => {
     void run(task).catch(() => {});
+  };
+
+  /**
+   * 登入自己一條路，不走 `run()`。
+   *
+   * 差別只有一個但很要緊：期間**不**鎖住其他按鈕。登入要等使用者在
+   * 瀏覽器裡操作，可能五分鐘，也可能他關掉分頁就再也不回來了 ——
+   * 那時底下的匯入正是出口，不能跟著一起被鎖住。
+   */
+  const login = () => {
+    setStarting(true);
+    // 立刻回讀一次，把「登入進行中」換成後端那個說了算的版本。
+    void load();
+    void invoke("start_login")
+      // 成功、失敗、取消，錯誤都已經由後端決定要不要寫進 `last_error`。
+      .catch(() => {})
+      .finally(() => {
+        setStarting(false);
+        void load();
+      });
   };
 
   if (!data) {
@@ -299,10 +248,12 @@ export default function App() {
     return (
       <SignIn
         busy={busy}
+        loggingIn={starting || data.loginPending}
         error={data.lastError}
         needsLogin={data.needsLogin}
         banners={banners}
-        onLogin={() => runQuietly(() => invoke("start_login"))}
+        onLogin={login}
+        onCancelLogin={() => void invoke("cancel_login_command")}
         onImportLocal={() => runQuietly(() => invoke("import_from_local_gfn"))}
         onImportManual={(value) =>
           runQuietly(() => invoke("import_manual", { data: value }))

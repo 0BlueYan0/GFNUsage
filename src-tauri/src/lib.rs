@@ -24,6 +24,20 @@ use crate::quota::QuotaSnapshot;
 /// 會讓整個程式永遠不再更新，直到重啟。
 pub const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// 會真的去綁迴圈埠的測試在這裡排隊。
+///
+/// `oauth::PORTS` 只有五個，而且是整台機器共用的 —— 測試平行跑起來會互相
+/// 搶，症狀是間歇性、換台機器就不重現的失敗。
+///
+/// 用 tokio 的 Mutex 而不是 std 的：這些測試整段都在 await，std 的 guard
+/// 跨 await 持有會被 clippy 擋下來（那條 lint 是對的，只是這裡是測試）。
+/// tokio 的 Mutex 沒有中毒的概念，某個測試 panic 也不會拖累後面每一個。
+#[cfg(test)]
+pub async fn loopback_ports() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
+}
+
 pub fn http_client(timeout: Duration) -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent("GFNUsage/0.1")
@@ -64,6 +78,27 @@ pub struct AppState {
     /// 使用者重新匯入或手動更新成功。否則每個週期都會為了 401 重試再鑄一顆
     /// token，一小時內就把「同時有效 token 上限」撞滿。
     pub needs_login: AtomicBool,
+
+    /// 有一次 OAuth 登入正在進行。
+    ///
+    /// 事實放在後端而不是前端：開瀏覽器一定會讓這個 flyout 失焦收起來，
+    /// 面板回來時（或任何一次重新載入、開發時的 HMR）本地旗標就沒了，
+    /// 畫面會變回「可以按登入」，於是使用者又開一次。
+    ///
+    /// 用 `Arc` 是因為 `Pending` 要拿一份：旗標跟著它的生命週期走，
+    /// 中途放棄（瀏覽器開不起來就直接 return）也不會卡在 true。
+    pub login_pending: Arc<AtomicBool>,
+
+    /// 取消進行中的登入。按一次取消就送出一個新的世代號，登入流程持一個
+    /// receiver，看到值變了就中止。
+    ///
+    /// 用 `watch` 而不是 `Notify`：`Notify` 只喚醒「當下已經在等」的人，
+    /// 取消訊號若比 `wait_for_code` 早一步抵達就整個掉了，使用者會覺得
+    /// 按了沒反應。`watch` 的 receiver 比對的是版本號，早到的一樣收得到。
+    ///
+    /// receiver 在 `begin_login` 就訂閱好，所以上一次登入留下的取消訊號
+    /// 不會誤殺下一次登入。
+    pub login_cancel: tokio::sync::watch::Sender<u64>,
 
     /// 面板因失去焦點而自動收起的時間點。
     ///
@@ -115,6 +150,8 @@ impl AppState {
             last_error: Mutex::new(None),
             settings_error: Mutex::new(None),
             needs_login: AtomicBool::new(false),
+            login_pending: Arc::new(AtomicBool::new(false)),
+            login_cancel: tokio::sync::watch::Sender::new(0),
             last_auto_hide: Mutex::new(None),
         }
     }
