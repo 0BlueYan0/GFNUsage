@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gfnusage_lib::commands::{self, refresh_into_state};
+use gfnusage_lib::commands::{self, poll_due, refresh_into_state};
 use gfnusage_lib::tray;
 use gfnusage_lib::AppState;
 use tauri::menu::{Menu, MenuItem};
@@ -103,6 +103,7 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "quit" => app.exit(0),
+                    // 使用者主動更新：不受「需重新登入」的暫停限制。
                     "refresh" => {
                         let state = app.state::<Arc<AppState>>().inner().clone();
                         let app = app.clone();
@@ -144,10 +145,14 @@ fn main() {
 
             // 輪詢迴圈。額度只在串流時變動，5 分鐘一次已足夠；
             // 串流中的即時警示是 GFN 客戶端自己的職責。
+            // 憑證被拒絕後暫停，直到使用者重新匯入或手動更新成功 ——
+            // 每次輪詢都會為了 401 重試再鑄一顆 token，不停的話一小時就撞上限。
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    let _ = refresh_into_state(&handle, &state).await;
+                    if poll_due(&state) {
+                        let _ = refresh_into_state(&handle, &state).await;
+                    }
                     tokio::time::sleep(POLL_INTERVAL).await;
                 }
             });
@@ -159,6 +164,7 @@ fn main() {
             commands::import_from_local_gfn,
             commands::import_manual,
             commands::refresh_now,
+            commands::refresh_if_due,
             commands::sign_out,
         ])
         .run(tauri::generate_context!())

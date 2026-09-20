@@ -1,6 +1,5 @@
 use std::sync::Mutex;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::session::ImportedSession;
@@ -8,20 +7,18 @@ use crate::error::GfnError;
 
 const SERVICE: &str = "GFNUsage";
 const ACCOUNT: &str = "nvidia-credentials";
+const ID_TOKEN_ACCOUNT: &str = "nvidia-id-token";
 
-/// 保存在金鑰儲存區裡的完整工作階段。
-///
-/// 除了長效的 `client_token`，也存下最近一次拿到的 `id_token` 與其效期。
-/// 這不只是快取：NVIDIA 限制同時有效的 access_token 數量，每次程序啟動
-/// 就重新刷新會很快撞到上限。存下來，重開後就能沿用還沒過期的那顆。
+/// Windows 認證管理員單筆祕密的上限（bytes，內容以 UTF-16 存放），超過時
+/// keyring 會拒絕寫入。憑證與 id_token 各自一筆就是為了各自塞得下：
+/// 一顆 id_token 約 1150 字元，和憑證塞在同一筆會超過這個上限。
+pub const WINDOWS_CREDENTIAL_BLOB_LIMIT: usize = 2560;
+
+/// 保存在金鑰儲存區裡的長效憑證。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredSession {
     pub client_token: String,
     pub sub: String,
-    #[serde(default)]
-    pub id_token: Option<String>,
-    #[serde(default)]
-    pub id_token_expires_at: Option<DateTime<Utc>>,
 }
 
 impl From<ImportedSession> for StoredSession {
@@ -29,65 +26,99 @@ impl From<ImportedSession> for StoredSession {
         Self {
             client_token: session.client_token,
             sub: session.sub,
-            id_token: None,
-            id_token_expires_at: None,
         }
     }
 }
 
 /// 憑證儲存介面。正式環境使用 OS 金鑰儲存區，測試使用記憶體實作。
+///
+/// id_token 另存一筆。它只是快取（NVIDIA 限制同時有效的 access_token 數量，
+/// 每次啟動都重鑄會撞上限），寫不進去不能牽連憑證本身那筆。
 pub trait TokenStore: Send + Sync {
     fn load(&self) -> Result<Option<StoredSession>, GfnError>;
     fn save(&self, session: &StoredSession) -> Result<(), GfnError>;
+    /// 清除憑證，連同 id_token。
     fn clear(&self) -> Result<(), GfnError>;
+
+    fn load_id_token(&self) -> Result<Option<String>, GfnError>;
+    fn save_id_token(&self, id_token: &str) -> Result<(), GfnError>;
+    fn clear_id_token(&self) -> Result<(), GfnError>;
 }
 
 /// Windows 認證管理員 / macOS 鑰匙圈。
 pub struct KeyringStore;
 
 impl KeyringStore {
-    fn entry() -> Result<keyring::Entry, GfnError> {
-        keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| GfnError::Keychain(e.to_string()))
+    fn entry(account: &str) -> Result<keyring::Entry, GfnError> {
+        keyring::Entry::new(SERVICE, account).map_err(|e| GfnError::Keychain(e.to_string()))
     }
-}
 
-impl TokenStore for KeyringStore {
-    fn load(&self) -> Result<Option<StoredSession>, GfnError> {
-        match Self::entry()?.get_password() {
-            Ok(raw) => {
-                let stored: StoredSession = serde_json::from_str(&raw)
-                    .map_err(|e| GfnError::Keychain(format!("儲存的憑證無法解析：{e}")))?;
-                Ok(Some(stored))
-            }
+    fn read(account: &str) -> Result<Option<String>, GfnError> {
+        match Self::entry(account)?.get_password() {
+            Ok(raw) => Ok(Some(raw)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(GfnError::Keychain(e.to_string())),
         }
     }
 
-    fn save(&self, session: &StoredSession) -> Result<(), GfnError> {
-        let raw = serde_json::to_string(session).map_err(|e| GfnError::Keychain(e.to_string()))?;
-        Self::entry()?
-            .set_password(&raw)
+    fn write(account: &str, raw: &str) -> Result<(), GfnError> {
+        Self::entry(account)?
+            .set_password(raw)
             .map_err(|e| GfnError::Keychain(e.to_string()))
     }
 
-    fn clear(&self) -> Result<(), GfnError> {
-        match Self::entry()?.delete_credential() {
+    fn delete(account: &str) -> Result<(), GfnError> {
+        match Self::entry(account)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(GfnError::Keychain(e.to_string())),
         }
     }
 }
 
+impl TokenStore for KeyringStore {
+    fn load(&self) -> Result<Option<StoredSession>, GfnError> {
+        let Some(raw) = Self::read(ACCOUNT)? else {
+            return Ok(None);
+        };
+        let stored = serde_json::from_str(&raw)
+            .map_err(|e| GfnError::Keychain(format!("儲存的憑證無法解析：{e}")))?;
+        Ok(Some(stored))
+    }
+
+    fn save(&self, session: &StoredSession) -> Result<(), GfnError> {
+        let raw = serde_json::to_string(session).map_err(|e| GfnError::Keychain(e.to_string()))?;
+        Self::write(ACCOUNT, &raw)
+    }
+
+    fn clear(&self) -> Result<(), GfnError> {
+        Self::delete(ID_TOKEN_ACCOUNT)?;
+        Self::delete(ACCOUNT)
+    }
+
+    fn load_id_token(&self) -> Result<Option<String>, GfnError> {
+        Self::read(ID_TOKEN_ACCOUNT)
+    }
+
+    fn save_id_token(&self, id_token: &str) -> Result<(), GfnError> {
+        Self::write(ID_TOKEN_ACCOUNT, id_token)
+    }
+
+    fn clear_id_token(&self) -> Result<(), GfnError> {
+        Self::delete(ID_TOKEN_ACCOUNT)
+    }
+}
+
 /// 測試用。不觸碰作業系統。
 pub struct MemoryStore {
-    inner: Mutex<Option<StoredSession>>,
+    session: Mutex<Option<StoredSession>>,
+    id_token: Mutex<Option<String>>,
 }
 
 impl MemoryStore {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(None),
+            session: Mutex::new(None),
+            id_token: Mutex::new(None),
         }
     }
 }
@@ -100,16 +131,31 @@ impl Default for MemoryStore {
 
 impl TokenStore for MemoryStore {
     fn load(&self) -> Result<Option<StoredSession>, GfnError> {
-        Ok(self.inner.lock().unwrap().clone())
+        Ok(self.session.lock().unwrap().clone())
     }
 
     fn save(&self, session: &StoredSession) -> Result<(), GfnError> {
-        *self.inner.lock().unwrap() = Some(session.clone());
+        *self.session.lock().unwrap() = Some(session.clone());
         Ok(())
     }
 
     fn clear(&self) -> Result<(), GfnError> {
-        *self.inner.lock().unwrap() = None;
+        *self.id_token.lock().unwrap() = None;
+        *self.session.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn load_id_token(&self) -> Result<Option<String>, GfnError> {
+        Ok(self.id_token.lock().unwrap().clone())
+    }
+
+    fn save_id_token(&self, id_token: &str) -> Result<(), GfnError> {
+        *self.id_token.lock().unwrap() = Some(id_token.to_string());
+        Ok(())
+    }
+
+    fn clear_id_token(&self) -> Result<(), GfnError> {
+        *self.id_token.lock().unwrap() = None;
         Ok(())
     }
 }
@@ -151,18 +197,61 @@ mod tests {
     }
 
     #[test]
-    fn imported_session_starts_without_an_id_token() {
-        let stored = sample();
-        assert_eq!(stored.id_token, None);
-        assert_eq!(stored.id_token_expires_at, None);
+    fn id_token_is_stored_separately_from_the_credential() {
+        let store = MemoryStore::new();
+        store.save(&sample()).unwrap();
+        assert_eq!(store.load_id_token().unwrap(), None);
+
+        store.save_id_token("JWT").unwrap();
+
+        assert_eq!(store.load_id_token().unwrap().as_deref(), Some("JWT"));
+        assert_eq!(store.load().unwrap(), Some(sample()));
     }
 
-    /// 舊版本存的內容沒有 id_token 欄位，升級後必須還讀得出來。
     #[test]
-    fn reads_records_written_before_id_token_was_stored() {
-        let legacy = r#"{"client_token":"CT123","sub":"SUB456"}"#;
+    fn clear_id_token_keeps_the_credential() {
+        let store = MemoryStore::new();
+        store.save(&sample()).unwrap();
+        store.save_id_token("JWT").unwrap();
+
+        store.clear_id_token().unwrap();
+
+        assert_eq!(store.load_id_token().unwrap(), None);
+        assert_eq!(store.load().unwrap(), Some(sample()));
+    }
+
+    #[test]
+    fn clearing_the_credential_also_drops_the_id_token() {
+        let store = MemoryStore::new();
+        store.save(&sample()).unwrap();
+        store.save_id_token("JWT").unwrap();
+
+        store.clear().unwrap();
+
+        assert_eq!(store.load_id_token().unwrap(), None);
+    }
+
+    /// 前一版把 id_token 塞在同一筆紀錄裡；使用者的金鑰儲存區現在就是這個樣子，
+    /// 升級後必須還讀得出來。
+    #[test]
+    fn ignores_the_id_token_fields_an_older_version_embedded() {
+        let legacy = r#"{"client_token":"CT123","sub":"SUB456","id_token":null,"id_token_expires_at":null}"#;
         let stored: StoredSession = serde_json::from_str(legacy).unwrap();
-        assert_eq!(stored.client_token, "CT123");
-        assert_eq!(stored.id_token, None);
+        assert_eq!(stored, sample());
+    }
+
+    /// Windows 認證管理員單筆祕密上限 2560 bytes（UTF-16）。
+    /// 把 id_token 和憑證塞在同一筆就是超過這個上限才炸的，所以兩筆各自都要塞得下。
+    #[test]
+    fn each_record_fits_the_windows_blob_limit() {
+        let session = StoredSession {
+            client_token: "c".repeat(86),
+            sub: "s".repeat(43),
+        };
+        let record = serde_json::to_string(&session).unwrap();
+        let utf16_bytes = |s: &str| s.encode_utf16().count() * 2;
+
+        assert!(utf16_bytes(&record) <= WINDOWS_CREDENTIAL_BLOB_LIMIT);
+        assert!(utf16_bytes(&"j".repeat(1151)) <= WINDOWS_CREDENTIAL_BLOB_LIMIT);
     }
 }

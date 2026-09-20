@@ -24,6 +24,11 @@ pub fn state_color(state: DisplayState) -> [u8; 3] {
     }
 }
 
+/// 資料過期時用的變淡顏色：每個色版乘 0.55，暗得看得出來、又不至於消失。
+pub fn dimmed(color: [u8; 3]) -> [u8; 3] {
+    color.map(|c| (c as u16 * 55 / 100) as u8)
+}
+
 /// 以基線 y=0、起筆 x=0 排版，回傳所有字形與其外框聯集。
 ///
 /// 用實際外框而非字型的 advance／ascent 來定位：數字沒有下伸部，
@@ -164,7 +169,7 @@ mod tests {
     /// 這條是 icon 真正的品質關卡：不能碰到邊界，碰到就代表被裁掉了。
     #[test]
     fn never_clips_at_the_edges() {
-        for text in ["1", "9", "87", "103", "115", "–"] {
+        for text in ["1", "9", "87", "103", "115", "–", "!"] {
             let rgba = render(text, WHITE);
             let (x0, y0, x1, y1) = ink_bounds(&rgba);
             assert!(x0 >= 1, "{text}：左邊被裁（x0={x0}）");
@@ -234,5 +239,14 @@ mod tests {
             std::fs::write(dir.join(format!("{name}.rgba")), &rgba).unwrap();
         }
         println!("dumped to {}", dir.display());
+    }
+
+    /// 變淡的顏色要看得出和原色不同，但也不能淡到看不見。
+    #[test]
+    fn dimmed_color_is_darker_but_still_visible() {
+        let base = state_color(DisplayState::Normal);
+        let dim = dimmed(base);
+        assert!(dim.iter().zip(base.iter()).all(|(d, b)| d < b), "{dim:?} 沒有比 {base:?} 暗");
+        assert!(dim.iter().all(|&c| c >= 64), "{dim:?} 太暗");
     }
 }

@@ -14,6 +14,8 @@ pub enum DisplayState {
 }
 
 /// 傳給前端與系統匣的顯示模型。所有時間單位為分鐘。
+///
+/// 本期起訖可能缺席：沒有時數上限的方案沒有「本期」可言。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaSnapshot {
@@ -25,8 +27,8 @@ pub struct QuotaSnapshot {
     pub used_minutes: u32,
     pub rolled_over_minutes: u32,
     pub purchased_minutes: u32,
-    pub span_start: DateTime<Utc>,
-    pub span_end: DateTime<Utc>,
+    pub span_start: Option<DateTime<Utc>>,
+    pub span_end: Option<DateTime<Utc>>,
     pub game_play_allowed: bool,
     pub low_threshold_minutes: u32,
     pub state: DisplayState,
@@ -130,6 +132,17 @@ mod tests {
         let snap = QuotaSnapshot::from_subscription(&sub, at(1789817022));
         assert_eq!(snap.state, DisplayState::FreeTier);
         assert!(!snap.time_capped);
+    }
+
+    /// 免費方案的回應可能連本期起訖都沒有，模型要能表達「沒有本期」。
+    #[test]
+    fn free_tier_without_quota_fields_has_no_span() {
+        let sub: Subscription =
+            serde_json::from_str(r#"{"membershipTier":"FREE","subType":"FREE"}"#).unwrap();
+        let snap = QuotaSnapshot::from_subscription(&sub, at(1789817022));
+        assert_eq!(snap.state, DisplayState::FreeTier);
+        assert!(snap.span_end.is_none());
+        assert_eq!(snap.tray_label(), "–");
     }
 
     #[test]

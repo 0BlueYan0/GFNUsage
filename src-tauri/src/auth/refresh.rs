@@ -36,13 +36,15 @@ impl CachedToken {
     }
 }
 
-/// 取得 id_token 的唯一入口。
+/// 取得 id_token 的唯一入口，也是所有會改動憑證儲存區的操作的唯一入口。
 ///
 /// 內部的 mutex 保證整個程序同時只有一次刷新在進行，因此定時輪詢、開啟面板、
 /// 以及 401 後的重試三者同時發生時，也不會各自呼叫一次 `/token`。
+/// 匯入與解除連結也在同一把鎖底下做：否則進行中的刷新寫回輪替結果時，
+/// 會把剛匯入的憑證蓋掉、或把剛清掉的憑證悄悄還原。
 ///
 /// 刷新會盡量少做：NVIDIA 限制同時有效的 access_token 數量，撞到上限會被擋，
-/// 所以 id_token 連同效期一起存進金鑰儲存區，程序重開後沿用而不是重鑄。
+/// 所以 id_token 另外存進金鑰儲存區，程序重開後沿用而不是重鑄。
 pub struct TokenManager {
     store: Arc<dyn TokenStore>,
     http: reqwest::Client,
@@ -71,11 +73,11 @@ impl TokenManager {
             }
         }
 
-        let stored = self.store.load()?.ok_or(GfnError::NeedsLogin)?;
+        let stored = self.store.load()?.ok_or(GfnError::NotLinked)?;
 
         // 程序剛啟動時記憶體是空的，但金鑰儲存區裡可能還有沒過期的 id_token。
         // 沿用它，才不會每次重開都向 NVIDIA 多要一顆。
-        if let Some(persisted) = persisted_token(&stored) {
+        if let Some(persisted) = self.persisted_token() {
             if persisted.usable() {
                 *guard = Some(persisted.clone());
                 return Ok(persisted.id_token);
@@ -90,14 +92,27 @@ impl TokenManager {
     /// 丟棄目前的 id_token，強制下次 `ensure_token` 重新取得。
     ///
     /// 記憶體與金鑰儲存區都要清 —— 只清記憶體的話，重新讀取又會把同一顆
-    /// 已經被伺服器拒絕的 token 載回來。
+    /// 已經被伺服器拒絕的 token 載回來。整段持鎖，不與刷新交錯。
     pub async fn invalidate(&self) {
-        *self.cached.lock().await = None;
-        if let Ok(Some(mut stored)) = self.store.load() {
-            stored.id_token = None;
-            stored.id_token_expires_at = None;
-            let _ = self.store.save(&stored);
-        }
+        let mut guard = self.cached.lock().await;
+        *guard = None;
+        let _ = self.store.clear_id_token();
+    }
+
+    /// 換成另一組憑證（匯入）。舊帳號的 id_token 一併丟棄，否則換了帳號之後
+    /// 還沒過期的那顆會被繼續拿來查詢，畫面上就會顯示錯的人的額度。
+    pub async fn replace_credentials(&self, session: StoredSession) -> Result<(), GfnError> {
+        let mut guard = self.cached.lock().await;
+        *guard = None;
+        self.store.clear_id_token()?;
+        self.store.save(&session)
+    }
+
+    /// 清除憑證（解除連結）。
+    pub async fn clear_credentials(&self) -> Result<(), GfnError> {
+        let mut guard = self.cached.lock().await;
+        *guard = None;
+        self.store.clear()
     }
 
     async fn refresh(&self, stored: StoredSession) -> Result<CachedToken, GfnError> {
@@ -115,6 +130,9 @@ impl TokenManager {
             .map_err(|e| GfnError::Network(e.to_string()))?;
 
         let status = response.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(GfnError::RateLimited);
+        }
         if status.is_client_error() {
             let body = response.text().await.unwrap_or_default();
             // 撞到 token 數量上限不是憑證失效，叫使用者重新登入毫無幫助。
@@ -142,37 +160,57 @@ impl TokenManager {
         self.store.save(&StoredSession {
             client_token: body.client_token,
             sub: stored.sub,
-            id_token: Some(body.id_token.clone()),
-            id_token_expires_at: Some(expires_at),
         })?;
+
+        // id_token 只是重啟後的快取，寫不進去不能讓刷新失敗 —— 憑證已經輪替了，
+        // 這裡失敗就等於把使用者鎖在外面。只記長度，不記內容。
+        if let Err(e) = self.store.save_id_token(&body.id_token) {
+            eprintln!(
+                "id_token（{} 字元）未能寫入金鑰儲存區，重啟後會重新取得：{e}",
+                body.id_token.len()
+            );
+        }
 
         Ok(CachedToken {
             id_token: body.id_token,
             expires_at,
         })
     }
-}
 
-fn persisted_token(stored: &StoredSession) -> Option<CachedToken> {
-    Some(CachedToken {
-        id_token: stored.id_token.clone()?,
-        expires_at: stored.id_token_expires_at?,
-    })
+    /// 金鑰儲存區裡的 id_token；效期直接從 token 本身讀，不另外存。
+    fn persisted_token(&self) -> Option<CachedToken> {
+        let id_token = self.store.load_id_token().ok().flatten()?;
+        let expires_at = jwt::expiry(&id_token)?;
+        Some(CachedToken {
+            id_token,
+            expires_at,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::time::Duration as StdDuration;
 
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use wiremock::matchers::{body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
     use crate::auth::session::ImportedSession;
     use crate::auth::store::MemoryStore;
+    use crate::http_client;
 
     /// exp 設在西元 2286 年，測試期間永遠有效。
     const FAR_FUTURE_JWT: &str = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig";
+
+    /// 效期由 token 本身決定，所以「快過期」的情境要一顆真的快過期的 JWT。
+    fn jwt_expiring_at(at: DateTime<Utc>) -> String {
+        let claims = format!(r#"{{"exp":{}}}"#, at.timestamp());
+        format!("eyJhbGciOiJSUzI1NiJ9.{}.sig", URL_SAFE_NO_PAD.encode(claims))
+    }
 
     fn base_session() -> StoredSession {
         ImportedSession {
@@ -189,15 +227,9 @@ mod tests {
     }
 
     /// 已經存有一顆 id_token 的儲存區，模擬程序重新啟動。
-    fn store_with_id_token(expires_at: DateTime<Utc>) -> Arc<MemoryStore> {
-        let store = Arc::new(MemoryStore::new());
-        store
-            .save(&StoredSession {
-                id_token: Some(FAR_FUTURE_JWT.into()),
-                id_token_expires_at: Some(expires_at),
-                ..base_session()
-            })
-            .unwrap();
+    fn store_with_id_token(jwt: &str) -> Arc<MemoryStore> {
+        let store = seeded_store();
+        store.save_id_token(jwt).unwrap();
         store
     }
 
@@ -220,6 +252,56 @@ mod tests {
             .await;
     }
 
+    fn manager(store: Arc<dyn TokenStore>, server: &MockServer) -> TokenManager {
+        TokenManager::new(store, reqwest::Client::new(), server.uri())
+    }
+
+    /// 可以指定哪一種寫入會失敗的儲存區，用來驗證兩筆紀錄的失敗互不牽連。
+    struct FailingStore {
+        inner: MemoryStore,
+        fail_save: AtomicBool,
+        fail_save_id_token: AtomicBool,
+    }
+
+    impl FailingStore {
+        fn seeded() -> Arc<Self> {
+            let inner = MemoryStore::new();
+            inner.save(&base_session()).unwrap();
+            Arc::new(Self {
+                inner,
+                fail_save: AtomicBool::new(false),
+                fail_save_id_token: AtomicBool::new(false),
+            })
+        }
+    }
+
+    impl TokenStore for FailingStore {
+        fn load(&self) -> Result<Option<StoredSession>, GfnError> {
+            self.inner.load()
+        }
+        fn save(&self, session: &StoredSession) -> Result<(), GfnError> {
+            if self.fail_save.load(Ordering::SeqCst) {
+                return Err(GfnError::Keychain("模擬寫入失敗".into()));
+            }
+            self.inner.save(session)
+        }
+        fn clear(&self) -> Result<(), GfnError> {
+            self.inner.clear()
+        }
+        fn load_id_token(&self) -> Result<Option<String>, GfnError> {
+            self.inner.load_id_token()
+        }
+        fn save_id_token(&self, id_token: &str) -> Result<(), GfnError> {
+            if self.fail_save_id_token.load(Ordering::SeqCst) {
+                return Err(GfnError::Keychain("模擬 id_token 寫入失敗".into()));
+            }
+            self.inner.save_id_token(id_token)
+        }
+        fn clear_id_token(&self) -> Result<(), GfnError> {
+            self.inner.clear_id_token()
+        }
+    }
+
     #[tokio::test]
     async fn refreshes_and_returns_id_token() {
         let server = MockServer::start().await;
@@ -231,7 +313,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let manager = TokenManager::new(seeded_store(), reqwest::Client::new(), server.uri());
+        let manager = manager(seeded_store(), &server);
 
         assert_eq!(manager.ensure_token().await.unwrap(), FAR_FUTURE_JWT);
     }
@@ -242,13 +324,11 @@ mod tests {
         mount_token(&server, token_response("CT-NEW"), 1).await;
 
         let store = seeded_store();
-        let manager = TokenManager::new(store.clone(), reqwest::Client::new(), server.uri());
+        let manager = manager(store.clone(), &server);
         manager.ensure_token().await.unwrap();
 
-        let saved = store.load().unwrap().unwrap();
-        assert_eq!(saved.client_token, "CT-NEW");
-        assert_eq!(saved.id_token.as_deref(), Some(FAR_FUTURE_JWT));
-        assert!(saved.id_token_expires_at.is_some());
+        assert_eq!(store.load().unwrap().unwrap().client_token, "CT-NEW");
+        assert_eq!(store.load_id_token().unwrap().as_deref(), Some(FAR_FUTURE_JWT));
     }
 
     /// 這條是 access_token 數量上限的防線：重開程序不該再要一顆。
@@ -258,11 +338,7 @@ mod tests {
         mount_token(&server, token_response("CT-NEW"), 0).await;
 
         // 全新的 TokenManager，記憶體快取是空的，等同程序剛啟動。
-        let manager = TokenManager::new(
-            store_with_id_token(Utc::now() + Duration::hours(3)),
-            reqwest::Client::new(),
-            server.uri(),
-        );
+        let manager = manager(store_with_id_token(FAR_FUTURE_JWT), &server);
 
         assert_eq!(manager.ensure_token().await.unwrap(), FAR_FUTURE_JWT);
     }
@@ -272,13 +348,10 @@ mod tests {
         let server = MockServer::start().await;
         mount_token(&server, token_response("CT-NEW"), 1).await;
 
-        let manager = TokenManager::new(
-            store_with_id_token(Utc::now() + Duration::minutes(2)),
-            reqwest::Client::new(),
-            server.uri(),
-        );
+        let almost_expired = jwt_expiring_at(Utc::now() + Duration::minutes(2));
+        let manager = manager(store_with_id_token(&almost_expired), &server);
 
-        manager.ensure_token().await.unwrap();
+        assert_eq!(manager.ensure_token().await.unwrap(), FAR_FUTURE_JWT);
     }
 
     #[tokio::test]
@@ -286,11 +359,7 @@ mod tests {
         let server = MockServer::start().await;
         mount_token(&server, token_response("CT-NEW"), 1).await;
 
-        let manager = Arc::new(TokenManager::new(
-            seeded_store(),
-            reqwest::Client::new(),
-            server.uri(),
-        ));
+        let manager = Arc::new(manager(seeded_store(), &server));
 
         let handles: Vec<_> = (0..10)
             .map(|_| {
@@ -309,7 +378,7 @@ mod tests {
         let server = MockServer::start().await;
         mount_token(&server, token_response("CT-NEW"), 1).await;
 
-        let manager = TokenManager::new(seeded_store(), reqwest::Client::new(), server.uri());
+        let manager = manager(seeded_store(), &server);
         manager.ensure_token().await.unwrap();
         manager.ensure_token().await.unwrap();
         manager.ensure_token().await.unwrap();
@@ -329,7 +398,7 @@ mod tests {
         .await;
 
         let store = seeded_store();
-        let manager = TokenManager::new(store.clone(), reqwest::Client::new(), server.uri());
+        let manager = manager(store.clone(), &server);
 
         assert!(matches!(
             manager.ensure_token().await,
@@ -353,7 +422,7 @@ mod tests {
         .await;
 
         let store = seeded_store();
-        let manager = TokenManager::new(store.clone(), reqwest::Client::new(), server.uri());
+        let manager = manager(store.clone(), &server);
 
         assert!(matches!(
             manager.ensure_token().await,
@@ -363,8 +432,24 @@ mod tests {
         assert_eq!(store.load().unwrap().unwrap().client_token, "CT-OLD");
     }
 
+    /// 被限流也不是憑證問題。
     #[tokio::test]
-    async fn missing_credentials_means_needs_login() {
+    async fn too_many_requests_is_reported_as_rate_limited_not_login() {
+        let server = MockServer::start().await;
+        mount_token(&server, ResponseTemplate::new(429), 1).await;
+
+        let store = seeded_store();
+        let manager = manager(store.clone(), &server);
+
+        assert!(matches!(
+            manager.ensure_token().await,
+            Err(GfnError::RateLimited)
+        ));
+        assert_eq!(store.load().unwrap().unwrap().client_token, "CT-OLD");
+    }
+
+    #[tokio::test]
+    async fn missing_credentials_means_not_linked() {
         let manager = TokenManager::new(
             Arc::new(MemoryStore::new()),
             reqwest::Client::new(),
@@ -373,13 +458,13 @@ mod tests {
 
         assert!(matches!(
             manager.ensure_token().await,
-            Err(GfnError::NeedsLogin)
+            Err(GfnError::NotLinked)
         ));
     }
 
     #[tokio::test]
     async fn invalidate_clears_the_persisted_id_token_too() {
-        let store = store_with_id_token(Utc::now() + Duration::hours(3));
+        let store = store_with_id_token(FAR_FUTURE_JWT);
         let manager = TokenManager::new(
             store.clone(),
             reqwest::Client::new(),
@@ -388,11 +473,9 @@ mod tests {
 
         manager.invalidate().await;
 
-        let saved = store.load().unwrap().unwrap();
-        assert_eq!(saved.id_token, None);
-        assert_eq!(saved.id_token_expires_at, None);
+        assert_eq!(store.load_id_token().unwrap(), None);
         // 長效憑證必須留著，否則使用者得重新匯入。
-        assert_eq!(saved.client_token, "CT-OLD");
+        assert_eq!(store.load().unwrap().unwrap().client_token, "CT-OLD");
     }
 
     #[tokio::test]
@@ -400,7 +483,7 @@ mod tests {
         let server = MockServer::start().await;
         mount_token(&server, token_response("CT-NEW"), 2).await;
 
-        let manager = TokenManager::new(seeded_store(), reqwest::Client::new(), server.uri());
+        let manager = manager(seeded_store(), &server);
         manager.ensure_token().await.unwrap();
         manager.ensure_token().await.unwrap(); // 用快取，不打網路
 
@@ -408,22 +491,144 @@ mod tests {
         manager.ensure_token().await.unwrap(); // 快取沒了，必須重抓
     }
 
+    /// spec §10「寫入後立即中斷」：憑證寫不進去時，同批的 id_token 不得被拿來用，
+    /// 儲存區也不能被改到一半。這條記錄的是被鎖在外面的情境，不是避免它。
     #[tokio::test]
-    async fn invalidated_manager_with_cleared_store_needs_login() {
+    async fn a_failed_credential_write_does_not_expose_the_new_id_token() {
         let server = MockServer::start().await;
-        mount_token(&server, token_response("CT-NEW"), 1).await;
+        mount_token(&server, token_response("CT-NEW"), 2).await;
 
-        let store = seeded_store();
-        let manager = TokenManager::new(store.clone(), reqwest::Client::new(), server.uri());
-        manager.ensure_token().await.unwrap();
-
-        // 這就是「解除連結」做的事：清 store + 丟快取。
-        store.clear().unwrap();
-        manager.invalidate().await;
+        let store = FailingStore::seeded();
+        store.fail_save.store(true, Ordering::SeqCst);
+        let manager = manager(store.clone(), &server);
 
         assert!(matches!(
             manager.ensure_token().await,
-            Err(GfnError::NeedsLogin)
+            Err(GfnError::Keychain(_))
+        ));
+        assert_eq!(store.load().unwrap().unwrap().client_token, "CT-OLD");
+        assert_eq!(store.load_id_token().unwrap(), None);
+
+        // 快取也必須是空的：下一次呼叫得重新走一遍網路（mock 期望 2 次）。
+        store.fail_save.store(false, Ordering::SeqCst);
+        manager.ensure_token().await.unwrap();
+    }
+
+    /// id_token 那筆寫不進去只是少了重啟後的快取，不能讓整次刷新失敗 ——
+    /// 憑證已經輪替了，失敗就等於把使用者鎖在外面。
+    #[tokio::test]
+    async fn a_failed_id_token_write_is_not_fatal() {
+        let server = MockServer::start().await;
+        mount_token(&server, token_response("CT-NEW"), 1).await;
+
+        let store = FailingStore::seeded();
+        store.fail_save_id_token.store(true, Ordering::SeqCst);
+        let manager = manager(store.clone(), &server);
+
+        assert_eq!(manager.ensure_token().await.unwrap(), FAR_FUTURE_JWT);
+        assert_eq!(store.load().unwrap().unwrap().client_token, "CT-NEW");
+        assert_eq!(store.load_id_token().unwrap(), None);
+
+        // 記憶體快取仍然有效，不會再打一次網路（mock 期望 1 次）。
+        assert_eq!(manager.ensure_token().await.unwrap(), FAR_FUTURE_JWT);
+    }
+
+    /// 「解除連結」若不等進行中的刷新結束，刷新寫回的憑證會把清除悄悄還原。
+    #[tokio::test]
+    async fn clear_credentials_waits_for_an_in_flight_refresh() {
+        let server = MockServer::start().await;
+        mount_token(
+            &server,
+            token_response("CT-NEW").set_delay(StdDuration::from_millis(200)),
+            1,
+        )
+        .await;
+
+        let store = seeded_store();
+        let manager = Arc::new(manager(store.clone(), &server));
+
+        let in_flight = {
+            let m = manager.clone();
+            tokio::spawn(async move { m.ensure_token().await })
+        };
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+
+        manager.clear_credentials().await.unwrap();
+        in_flight.await.unwrap().unwrap();
+
+        assert_eq!(store.load().unwrap(), None);
+        assert_eq!(store.load_id_token().unwrap(), None);
+        assert!(matches!(
+            manager.ensure_token().await,
+            Err(GfnError::NotLinked)
+        ));
+    }
+
+    /// 匯入新帳號時同理：不能被舊帳號進行中的輪替結果蓋掉。
+    #[tokio::test]
+    async fn replace_credentials_waits_for_an_in_flight_refresh() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("client_token=CT-OLD"))
+            .respond_with(token_response("CT-NEW").set_delay(StdDuration::from_millis(200)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("client_token=CT-IMPORTED"))
+            .respond_with(token_response("CT-NEW-2"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = seeded_store();
+        let manager = Arc::new(manager(store.clone(), &server));
+
+        let in_flight = {
+            let m = manager.clone();
+            tokio::spawn(async move { m.ensure_token().await })
+        };
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+
+        manager
+            .replace_credentials(StoredSession {
+                client_token: "CT-IMPORTED".into(),
+                sub: "SUB-NEW".into(),
+            })
+            .await
+            .unwrap();
+        in_flight.await.unwrap().unwrap();
+
+        assert_eq!(store.load().unwrap().unwrap().client_token, "CT-IMPORTED");
+        assert_eq!(store.load_id_token().unwrap(), None);
+
+        // 舊帳號的 id_token 快取也必須丟掉：下一次要用新憑證刷新。
+        manager.ensure_token().await.unwrap();
+        assert_eq!(store.load().unwrap().unwrap().client_token, "CT-NEW-2");
+    }
+
+    /// 連線卡住時必須放棄，否則 mutex 會被永遠持有，整個程式再也不更新。
+    #[tokio::test]
+    async fn refresh_gives_up_on_a_stalled_token_endpoint() {
+        let server = MockServer::start().await;
+        mount_token(
+            &server,
+            token_response("CT-NEW").set_delay(StdDuration::from_secs(5)),
+            1,
+        )
+        .await;
+
+        let manager = TokenManager::new(
+            seeded_store(),
+            http_client(StdDuration::from_millis(200)),
+            server.uri(),
+        );
+
+        assert!(matches!(
+            manager.ensure_token().await,
+            Err(GfnError::Network(_))
         ));
     }
 }

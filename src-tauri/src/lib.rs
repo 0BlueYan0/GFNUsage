@@ -5,12 +5,26 @@ pub mod error;
 pub mod quota;
 pub mod tray;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use crate::api::subscriptions::MES_BASE;
 use crate::auth::refresh::{TokenManager, STARFLEET_BASE};
 use crate::auth::store::{KeyringStore, TokenStore};
 use crate::quota::QuotaSnapshot;
+
+/// 單次 HTTP 請求的上限。刷新在 mutex 內進行，沒有上限的話一次卡住的連線
+/// 會讓整個程式永遠不再更新，直到重啟。
+pub const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub fn http_client(timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("GFNUsage/0.1")
+        .timeout(timeout)
+        .build()
+        .expect("HTTP 用戶端應可建立")
+}
 
 /// 全應用程式共用的狀態。憑證本身不在這裡 —— 那只存在 keychain 與
 /// `TokenManager` 的記憶體快取中。
@@ -18,10 +32,16 @@ pub struct AppState {
     pub tokens: Arc<TokenManager>,
     pub store: Arc<dyn TokenStore>,
     pub http: reqwest::Client,
+    pub mes_base: String,
     /// 這兩個用 std 的 Mutex 是刻意的：鎖絕不跨越 await 持有。
     /// 若之後需要在持鎖期間 await，要改成 tokio::sync::Mutex。
     pub snapshot: Mutex<Option<QuotaSnapshot>>,
     pub last_error: Mutex<Option<String>>,
+
+    /// 憑證被拒絕（401 重試後仍失敗）。這個旗標會黏住：輪詢暫停，直到
+    /// 使用者重新匯入或手動更新成功。否則每個週期都會為了 401 重試再鑄一顆
+    /// token，一小時內就把「同時有效 token 上限」撞滿。
+    pub needs_login: AtomicBool,
 
     /// 面板因失去焦點而自動收起的時間點。
     ///
@@ -33,23 +53,35 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let store: Arc<dyn TokenStore> = Arc::new(KeyringStore);
-        let http = reqwest::Client::builder()
-            .user_agent("GFNUsage/0.1")
-            .build()
-            .expect("HTTP 用戶端應可建立");
+        Self::with(
+            Arc::new(KeyringStore),
+            http_client(HTTP_TIMEOUT),
+            STARFLEET_BASE,
+            MES_BASE,
+        )
+    }
+
+    /// 可注入儲存區與端點的建構式，測試用。
+    pub fn with(
+        store: Arc<dyn TokenStore>,
+        http: reqwest::Client,
+        auth_base: &str,
+        mes_base: &str,
+    ) -> Self {
         let tokens = Arc::new(TokenManager::new(
             store.clone(),
             http.clone(),
-            STARFLEET_BASE.to_string(),
+            auth_base.to_string(),
         ));
 
         Self {
             tokens,
             store,
             http,
+            mes_base: mes_base.to_string(),
             snapshot: Mutex::new(None),
             last_error: Mutex::new(None),
+            needs_login: AtomicBool::new(false),
             last_auto_hide: Mutex::new(None),
         }
     }

@@ -6,32 +6,55 @@ use crate::error::GfnError;
 pub const MES_BASE: &str = "https://mes.geforcenow.com";
 
 /// `/v4/subscriptions` 回應中本程式會用到的欄位。
+///
 /// serde 預設忽略未知欄位 —— NVIDIA 隨時會加東西，加了不能壞。
+/// 反過來，配額相關欄位一律允許缺席：免費方案的回應從沒觀察過，
+/// 缺了幾個欄位不能讓整次解析失敗。`membershipTier` 是唯一必要欄位。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Subscription {
     pub membership_tier: String,
+    #[serde(default)]
     pub sub_type: String,
+    #[serde(default)]
     pub allotted_time_in_minutes: u32,
+    #[serde(default)]
     pub rolled_over_time_in_minutes: u32,
+    #[serde(default)]
     pub purchased_time_in_minutes: u32,
+    #[serde(default)]
     pub total_time_in_minutes: u32,
+    #[serde(default)]
     pub remaining_time_in_minutes: u32,
-    pub current_span_start_date_time: DateTime<Utc>,
-    pub current_span_end_date_time: DateTime<Utc>,
+    #[serde(default)]
+    pub current_span_start_date_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub current_span_end_date_time: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub current_subscription_state: SubscriptionState,
+    #[serde(default)]
     pub notifications: Notifications,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct SubscriptionState {
     pub state: String,
     pub is_game_play_allowed: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+impl Default for SubscriptionState {
+    /// 欄位缺席不代表不能玩。
+    fn default() -> Self {
+        Self {
+            state: String::new(),
+            is_game_play_allowed: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Notifications {
     pub notify_user_when_time_remaining_in_minutes: u32,
     pub notify_user_on_session_when_remaining_time_in_minutes: u32,
@@ -56,6 +79,9 @@ pub async fn fetch_subscription(
         .map_err(|e| GfnError::Network(e.to_string()))?;
 
     let status = response.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(GfnError::RateLimited);
+    }
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return Err(GfnError::NeedsLogin);
     }
@@ -89,7 +115,10 @@ mod tests {
         assert_eq!(sub.rolled_over_time_in_minutes, 900);
         assert!(sub.current_subscription_state.is_game_play_allowed);
         assert_eq!(sub.notifications.notify_user_when_time_remaining_in_minutes, 300);
-        assert_eq!(sub.current_span_end_date_time.timestamp(), 1792108799);
+        assert_eq!(
+            sub.current_span_end_date_time.unwrap().timestamp(),
+            1792108799
+        );
     }
 
     #[tokio::test]
@@ -124,5 +153,40 @@ mod tests {
 
         let result = fetch_subscription(&reqwest::Client::new(), &server.uri(), "BAD").await;
         assert!(matches!(result, Err(GfnError::NeedsLogin)));
+    }
+
+    /// 免費方案的回應從沒觀察過。配額相關欄位缺席時要能解析，
+    /// 不然免費方案的使用者看到的會是「回應格式非預期」而不是「免費方案」。
+    #[test]
+    fn parses_a_payload_without_quota_fields() {
+        let sub: Subscription =
+            serde_json::from_str(r#"{"membershipTier":"FREE","subType":"FREE"}"#).unwrap();
+
+        assert_eq!(sub.sub_type, "FREE");
+        assert_eq!(sub.total_time_in_minutes, 0);
+        assert_eq!(sub.remaining_time_in_minutes, 0);
+        assert!(sub.current_span_end_date_time.is_none());
+        assert!(
+            sub.current_subscription_state.is_game_play_allowed,
+            "欄位缺席不代表不能玩"
+        );
+    }
+
+    #[test]
+    fn still_rejects_a_payload_without_the_tier() {
+        assert!(serde_json::from_str::<Subscription>("{}").is_err());
+    }
+
+    #[tokio::test]
+    async fn maps_429_to_rate_limited() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v4/subscriptions"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+
+        let result = fetch_subscription(&reqwest::Client::new(), &server.uri(), "TOKEN").await;
+        assert!(matches!(result, Err(GfnError::RateLimited)));
     }
 }

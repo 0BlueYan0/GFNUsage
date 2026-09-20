@@ -3,20 +3,29 @@
 //! 用途：釐清「需要重新登入」是哪一種狀況，並在可能的情況下修好。
 //!
 //!   cargo run --example diagnose --manifest-path src-tauri/Cargo.toml
+//!   cargo run --example diagnose --manifest-path src-tauri/Cargo.toml -- --probe-rotation
 //!
-//! 它會回答三個問題：
+//! 它會回答兩個問題（加 `--probe-rotation` 則是三個）：
 //!   1. keychain 裡的 token 和 GFN 客戶端檔案裡的是不是同一顆？
 //!   2. 哪一顆還活著？
-//!   3. 刷新之後，舊的那顆會不會立刻失效？（這決定我們能不能和 GFN 客戶端共存）
+//!   3. （選用）刷新之後，舊的那顆會不會立刻失效？這決定能不能和 GFN 客戶端共存。
+//!      預設不跑：它會再鑄一顆 token，而且伺服器若是延遲作廢，這一步鑄出的
+//!      新 client_token 會讓第 2 步那顆失效 —— 診斷工具不該自己造成鎖死。
+//!
+//! 每次成功的 `/token` 都算進「同時有效的 access_token 數量上限」，
+//! 所以本工具最多只呼叫兩次（加 `--probe-rotation` 三次），並且把最後一次
+//! 鑄出的 client_token 與 id_token 都寫回 keychain，app 下次啟動不必再鑄。
 //!
 //! token 內容一律遮蔽，只印前後各 4 字元與長度。
-//! 最後會把確認可用的那顆寫回 keychain。
 
 use std::sync::Arc;
 
 use gfnusage_lib::auth::refresh::{STARFLEET_BASE, STARFLEET_CLIENT_ID};
-use gfnusage_lib::auth::session::{default_shared_storage_path, read_shared_storage, ImportedSession};
+use gfnusage_lib::auth::session::{
+    default_shared_storage_path, read_shared_storage, ImportedSession,
+};
 use gfnusage_lib::auth::store::{KeyringStore, StoredSession, TokenStore};
+use gfnusage_lib::{http_client, HTTP_TIMEOUT};
 
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:client_token";
 
@@ -28,13 +37,19 @@ fn mask(token: &str) -> String {
     if token.len() <= 8 {
         return format!("<{} 字元>", token.len());
     }
-    format!("{}…{} ({} 字元)", &token[..4], &token[token.len() - 4..], token.len())
+    format!(
+        "{}…{} ({} 字元)",
+        &token[..4],
+        &token[token.len() - 4..],
+        token.len()
+    )
 }
 
 struct Outcome {
     status: u16,
     body: String,
     new_client_token: Option<String>,
+    id_token: Option<String>,
 }
 
 async fn try_refresh(http: &reqwest::Client, session: &ImportedSession) -> Outcome {
@@ -56,15 +71,18 @@ async fn try_refresh(http: &reqwest::Client, session: &ImportedSession) -> Outco
                 status: 0,
                 body: format!("網路錯誤：{e}"),
                 new_client_token: None,
+                id_token: None,
             }
         }
     };
 
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
-    let new_client_token = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|v| v.get("client_token")?.as_str().map(str::to_owned));
+    let json = serde_json::from_str::<serde_json::Value>(&text).ok();
+    let field = |name: &str| {
+        json.as_ref()
+            .and_then(|v| v.get(name)?.as_str().map(str::to_owned))
+    };
 
     Outcome {
         status,
@@ -73,16 +91,22 @@ async fn try_refresh(http: &reqwest::Client, session: &ImportedSession) -> Outco
         } else {
             text.chars().take(200).collect()
         },
-        new_client_token,
+        new_client_token: field("client_token"),
+        id_token: field("id_token"),
     }
+}
+
+/// 一次成功刷新的結果：之後要寫回 keychain 的就是這組。
+#[derive(Clone)]
+struct Minted {
+    session: ImportedSession,
+    id_token: Option<String>,
 }
 
 #[tokio::main]
 async fn main() {
-    let http = reqwest::Client::builder()
-        .user_agent("GFNUsage/0.1")
-        .build()
-        .expect("HTTP 用戶端");
+    let probe_rotation = std::env::args().any(|a| a == "--probe-rotation");
+    let http = http_client(HTTP_TIMEOUT);
     let keyring: Arc<dyn TokenStore> = Arc::new(KeyringStore);
 
     println!("=== 1. 兩邊的憑證 ===");
@@ -106,17 +130,16 @@ async fn main() {
         }
     };
 
-    let from_file = default_shared_storage_path()
-        .and_then(|path| match read_shared_storage(&path) {
-            Ok(session) => {
-                println!("GFN 客戶端    {}", mask(&session.client_token));
-                Some(session)
-            }
-            Err(e) => {
-                println!("GFN 客戶端    讀取失敗：{e}");
-                None
-            }
-        });
+    let from_file = default_shared_storage_path().and_then(|path| match read_shared_storage(&path) {
+        Ok(session) => {
+            println!("GFN 客戶端    {}", mask(&session.client_token));
+            Some(session)
+        }
+        Err(e) => {
+            println!("GFN 客戶端    讀取失敗：{e}");
+            None
+        }
+    });
 
     if let (Some(a), Some(b)) = (&stored, &from_file) {
         if a.client_token == b.client_token {
@@ -129,7 +152,7 @@ async fn main() {
     println!();
     println!("=== 2. 哪一顆還活著 ===");
 
-    let mut alive: Option<(String, ImportedSession)> = None;
+    let mut alive: Option<(String, Minted)> = None;
     let mut rotated_from: Option<ImportedSession> = None;
     let mut capped: Option<ImportedSession> = None;
 
@@ -144,19 +167,26 @@ async fn main() {
         match outcome.status {
             200 => {
                 let new = outcome.new_client_token.clone().unwrap_or_default();
-                let same = new == session.client_token;
+                let same = new.is_empty() || new == session.client_token;
                 println!(
                     "{name:<12}  可用（HTTP 200）；回傳的 client_token {}",
-                    if same { "與送出的相同 → 不輪替".to_string() } else { format!("是新的 {} → 會輪替", mask(&new)) }
+                    if same {
+                        "與送出的相同 → 不輪替".to_string()
+                    } else {
+                        format!("是新的 {} → 會輪替", mask(&new))
+                    }
                 );
                 if !same {
                     rotated_from = Some(session.clone());
                 }
                 alive = Some((
                     name.to_string(),
-                    ImportedSession {
-                        client_token: if new.is_empty() { session.client_token.clone() } else { new },
-                        sub: session.sub.clone(),
+                    Minted {
+                        session: ImportedSession {
+                            client_token: if same { session.client_token.clone() } else { new },
+                            sub: session.sub.clone(),
+                        },
+                        id_token: outcome.id_token,
                     },
                 ));
             }
@@ -172,15 +202,14 @@ async fn main() {
         }
     }
 
-    let Some((source, current)) = alive else {
+    let Some((source, mut current)) = alive else {
         println!();
         if let Some(session) = capped {
             println!("憑證是好的，只是撞到 token 數量上限。");
             println!("已把它寫回 keychain；等既有的 token 過期（最多 1 小時）後");
             println!("回到面板按「立即更新」就會恢復，不需要重新登入。");
-            match keyring.save(&StoredSession::from(session)) {
-                Ok(()) => {}
-                Err(e) => println!("（寫入失敗：{e}）"),
+            if let Err(e) = keyring.save(&StoredSession::from(session)) {
+                println!("（寫入失敗：{e}）");
             }
         } else {
             println!("兩顆都失效了。");
@@ -190,31 +219,58 @@ async fn main() {
         return;
     };
 
-    println!();
-    println!("=== 3. 舊的那顆刷新後會不會立刻失效 ===");
+    if probe_rotation {
+        println!();
+        println!("=== 3. 舊的那顆刷新後會不會立刻失效 ===");
 
-    match rotated_from {
-        None => println!("伺服器沒有輪替 client_token，本工具與 GFN 客戶端可以共存。"),
-        Some(old) => {
-            let outcome = try_refresh(&http, &old).await;
-            match outcome.status {
-                200 => println!(
-                    "舊的那顆刷新後仍可用（HTTP 200）→ 輪替但不立即失效，\n\
-                     代表本工具與 GFN 客戶端可以共存。"
-                ),
-                code => println!(
-                    "舊的那顆已失效（HTTP {code}）→ 每次刷新都會讓另一方的複本作廢。\n\
-                     本工具與 GFN 客戶端無法共用同一組憑證。"
-                ),
+        match rotated_from {
+            None => println!("伺服器沒有輪替 client_token，本工具與 GFN 客戶端可以共存。"),
+            Some(old) => {
+                let outcome = try_refresh(&http, &old).await;
+                match outcome.status {
+                    200 => {
+                        println!(
+                            "舊的那顆刷新後仍可用（HTTP 200）→ 輪替但不立即失效，\n\
+                             代表本工具與 GFN 客戶端可以共存。"
+                        );
+                        // 這一步又鑄了一顆；能確定還活著的是最後鑄出的這顆，寫回的要是它。
+                        if let Some(new) = outcome.new_client_token.filter(|t| !t.is_empty()) {
+                            current = Minted {
+                                session: ImportedSession {
+                                    client_token: new,
+                                    sub: old.sub.clone(),
+                                },
+                                id_token: outcome.id_token,
+                            };
+                        }
+                    }
+                    code => println!(
+                        "舊的那顆已失效（HTTP {code}）→ 每次刷新都會讓另一方的複本作廢。\n\
+                         本工具與 GFN 客戶端無法共用同一組憑證。"
+                    ),
+                }
             }
         }
     }
 
     println!();
-    println!("=== 4. 寫回 keychain ===");
-    match keyring.save(&StoredSession::from(current.clone())) {
-        Ok(()) => println!("已把來自「{source}」的可用憑證 {} 寫回。", mask(&current.client_token)),
+    println!("=== {}. 寫回 keychain ===", if probe_rotation { 4 } else { 3 });
+    match keyring.save(&StoredSession::from(current.session.clone())) {
+        Ok(()) => println!(
+            "已把來自「{source}」的可用憑證 {} 寫回。",
+            mask(&current.session.client_token)
+        ),
         Err(e) => println!("寫入失敗：{e}"),
+    }
+    // 連 id_token 一起寫回，app 下次啟動就不必再鑄一顆。
+    match current.id_token.as_deref() {
+        Some(id_token) => match keyring.save_id_token(id_token) {
+            Ok(()) => println!("id_token（{} 字元）也已寫回，app 啟動時會直接沿用。", id_token.len()),
+            Err(e) => println!("id_token 寫入失敗（app 啟動時會重新取得）：{e}"),
+        },
+        None => {
+            let _ = keyring.clear_id_token();
+        }
     }
     println!("回到 GFNUsage 面板按「立即更新」即可。");
 }

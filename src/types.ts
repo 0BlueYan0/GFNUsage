@@ -9,8 +9,9 @@ export interface QuotaSnapshot {
   usedMinutes: number;
   rolledOverMinutes: number;
   purchasedMinutes: number;
-  spanStart: string;
-  spanEnd: string;
+  /** 沒有時數上限的方案沒有「本期」可言，會是 null。 */
+  spanStart: string | null;
+  spanEnd: string | null;
   gamePlayAllowed: boolean;
   lowThresholdMinutes: number;
   state: DisplayState;
@@ -20,6 +21,8 @@ export interface PanelData {
   snapshot: QuotaSnapshot | null;
   lastError: string | null;
   hasCredentials: boolean;
+  /** 憑證被拒絕：後端已暫停輪詢，要重新匯入。 */
+  needsLogin: boolean;
 }
 
 /** 分鐘轉為「103.0」這樣的小時數字串，不含單位。 */
