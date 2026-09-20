@@ -62,7 +62,7 @@ async fn store_credentials<R: Runtime>(
     state: &Arc<AppState>,
     session: ImportedSession,
 ) -> Result<(), String> {
-    state.store.save(&session).map_err(|e| e.to_string())?;
+    state.store.save(&session.into()).map_err(|e| e.to_string())?;
     state.tokens.invalidate().await;
     clear_state(app, state);
     Ok(())

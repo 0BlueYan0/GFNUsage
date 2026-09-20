@@ -16,9 +16,13 @@ use std::sync::Arc;
 
 use gfnusage_lib::auth::refresh::{STARFLEET_BASE, STARFLEET_CLIENT_ID};
 use gfnusage_lib::auth::session::{default_shared_storage_path, read_shared_storage, ImportedSession};
-use gfnusage_lib::auth::store::{KeyringStore, TokenStore};
+use gfnusage_lib::auth::store::{KeyringStore, StoredSession, TokenStore};
 
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:client_token";
+
+/// 撞到「同時有效的 access_token 數量上限」。這不代表憑證壞了 ——
+/// 憑證是好的，只是暫時換不到新的 token，等既有的過期就會恢復。
+const TOO_MANY_TOKENS: &str = "Max allowed simultaneous valid access_token exceeded";
 
 fn mask(token: &str) -> String {
     if token.len() <= 8 {
@@ -86,7 +90,11 @@ async fn main() {
     let stored = match keyring.load() {
         Ok(Some(session)) => {
             println!("keychain      {}", mask(&session.client_token));
-            Some(session)
+            // 統一成匯入用的型別，方便和 GFN 檔案那顆並排比較。
+            Some(ImportedSession {
+                client_token: session.client_token,
+                sub: session.sub,
+            })
         }
         Ok(None) => {
             println!("keychain      （空的，尚未匯入）");
@@ -123,6 +131,7 @@ async fn main() {
 
     let mut alive: Option<(String, ImportedSession)> = None;
     let mut rotated_from: Option<ImportedSession> = None;
+    let mut capped: Option<ImportedSession> = None;
 
     for (name, session) in [("keychain", stored.as_ref()), ("GFN 客戶端", from_file.as_ref())] {
         let Some(session) = session else { continue };
@@ -151,15 +160,33 @@ async fn main() {
                     },
                 ));
             }
+            code if outcome.body.contains(TOO_MANY_TOKENS) => {
+                println!(
+                    "{name:<12}  憑證有效，但暫時換不到 token（HTTP {code}）
+                     {:<14}NVIDIA 限制同時有效的 access_token 數量，目前已達上限。",
+                    ""
+                );
+                capped = Some(session.clone());
+            }
             code => println!("{name:<12}  失效（HTTP {code}）{}", outcome.body),
         }
     }
 
     let Some((source, current)) = alive else {
         println!();
-        println!("兩顆都失效了。");
-        println!("解法：開啟 GeForce NOW 客戶端並確認能正常登入，");
-        println!("      讓它寫入新的憑證，然後在面板重新匯入。");
+        if let Some(session) = capped {
+            println!("憑證是好的，只是撞到 token 數量上限。");
+            println!("已把它寫回 keychain；等既有的 token 過期（最多 1 小時）後");
+            println!("回到面板按「立即更新」就會恢復，不需要重新登入。");
+            match keyring.save(&StoredSession::from(session)) {
+                Ok(()) => {}
+                Err(e) => println!("（寫入失敗：{e}）"),
+            }
+        } else {
+            println!("兩顆都失效了。");
+            println!("解法：開啟 GeForce NOW 客戶端並確認能正常登入，");
+            println!("      讓它寫入新的憑證，然後在面板重新匯入。");
+        }
         return;
     };
 
@@ -185,7 +212,7 @@ async fn main() {
 
     println!();
     println!("=== 4. 寫回 keychain ===");
-    match keyring.save(&current) {
+    match keyring.save(&StoredSession::from(current.clone())) {
         Ok(()) => println!("已把來自「{source}」的可用憑證 {} 寫回。", mask(&current.client_token)),
         Err(e) => println!("寫入失敗：{e}"),
     }
