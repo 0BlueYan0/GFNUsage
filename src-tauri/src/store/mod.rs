@@ -46,7 +46,8 @@ pub fn save(path: &Path, schedule: &Schedule) -> Result<(), String> {
         let mut file = fs::File::create(&tmp).map_err(|e| format!("寫入設定檔失敗：{e}"))?;
         file.write_all(text.as_bytes())
             .map_err(|e| format!("寫入設定檔失敗：{e}"))?;
-        file.sync_all().map_err(|e| format!("寫入設定檔失敗：{e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("寫入設定檔失敗：{e}"))?;
     }
     fs::rename(&tmp, path).map_err(|e| format!("置換設定檔失敗：{e}"))
 }
@@ -229,8 +230,11 @@ mod tests {
     fn a_file_with_invalid_content_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = schedule_path(dir.path());
-        std::fs::write(&path, r#"{"weekly":[{"weekdays":[9],"startMinute":0,"endMinute":60}]}"#)
-            .unwrap();
+        std::fs::write(
+            &path,
+            r#"{"weekly":[{"weekdays":[9],"startMinute":0,"endMinute":60}]}"#,
+        )
+        .unwrap();
         assert!(load(&path).is_err());
     }
 

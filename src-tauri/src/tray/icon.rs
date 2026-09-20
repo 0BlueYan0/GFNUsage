@@ -50,7 +50,8 @@ fn layout(font: &FontRef, text: &str, px: f32) -> (Vec<OutlinedGlyph>, Option<Re
             pen_x += scaled.kern(font.glyph_id(prev), id);
         }
 
-        if let Some(outlined) = font.outline_glyph(id.with_scale_and_position(scale, point(pen_x, 0.0)))
+        if let Some(outlined) =
+            font.outline_glyph(id.with_scale_and_position(scale, point(pen_x, 0.0)))
         {
             let b = outlined.px_bounds();
             bounds = Some(match bounds {
@@ -153,7 +154,10 @@ mod tests {
 
     #[test]
     fn renders_visible_pixels() {
-        assert!(opaque_pixels(&render("103", WHITE)) > 0, "圖示不應該是全透明的");
+        assert!(
+            opaque_pixels(&render("103", WHITE)) > 0,
+            "圖示不應該是全透明的"
+        );
     }
 
     #[test]
@@ -187,10 +191,7 @@ mod tests {
         for text in ["87", "103", "115"] {
             let (x0, _, x1, _) = ink_bounds(&render(text, WHITE));
             let width = x1 - x0 + 1;
-            assert!(
-                width >= ICON_SIZE * 3 / 4,
-                "{text}：只佔了 {width}px，太小"
-            );
+            assert!(width >= ICON_SIZE * 3 / 4, "{text}：只佔了 {width}px，太小");
         }
     }
 
@@ -255,7 +256,10 @@ mod tests {
     fn dimmed_color_is_darker_but_still_visible() {
         let base = state_color(DisplayState::Normal);
         let dim = dimmed(base);
-        assert!(dim.iter().zip(base.iter()).all(|(d, b)| d < b), "{dim:?} 沒有比 {base:?} 暗");
+        assert!(
+            dim.iter().zip(base.iter()).all(|(d, b)| d < b),
+            "{dim:?} 沒有比 {base:?} 暗"
+        );
         assert!(dim.iter().all(|&c| c >= 64), "{dim:?} 太暗");
     }
 }

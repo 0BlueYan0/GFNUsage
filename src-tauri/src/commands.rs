@@ -162,10 +162,7 @@ pub async fn refresh_now(app: AppHandle, state: State<'_, Arc<AppState>>) -> Res
 /// 面板開啟時的更新。尊重黏住的「需重新登入」——
 /// 不然每開一次面板就鑄一顆 token，等於從前門把 token 上限撞滿。
 #[tauri::command]
-pub async fn refresh_if_due(
-    app: AppHandle,
-    state: State<'_, Arc<AppState>>,
-) -> Result<(), String> {
+pub async fn refresh_if_due(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     if !poll_due(&state) {
         return Ok(());
     }
@@ -496,7 +493,9 @@ mod tests {
     async fn invalid_pasted_credential_is_recorded_as_last_error() {
         let h = harness(false).await;
 
-        assert!(link_manual(&h.state, "not base64 at all !!!").await.is_err());
+        assert!(link_manual(&h.state, "not base64 at all !!!")
+            .await
+            .is_err());
 
         assert!(last_error(&h.state).unwrap().contains("憑證格式無效"));
         assert_eq!(h.store.load().unwrap(), None);
@@ -506,7 +505,8 @@ mod tests {
     async fn refresh_retries_once_after_a_401() {
         let h = harness(true).await;
         mount_token(&h.server, 2).await;
-        mount_subscriptions_sequence(&h.server, ResponseTemplate::new(401), subscriptions_ok()).await;
+        mount_subscriptions_sequence(&h.server, ResponseTemplate::new(401), subscriptions_ok())
+            .await;
 
         let snapshot = refresh_state(&h.state).await.unwrap();
 
@@ -576,7 +576,8 @@ mod tests {
     async fn a_network_error_keeps_the_last_snapshot() {
         let h = harness(true).await;
         mount_token(&h.server, 1).await;
-        mount_subscriptions_sequence(&h.server, subscriptions_ok(), ResponseTemplate::new(500)).await;
+        mount_subscriptions_sequence(&h.server, subscriptions_ok(), ResponseTemplate::new(500))
+            .await;
 
         refresh_state(&h.state).await.unwrap();
         assert!(refresh_state(&h.state).await.is_err());
@@ -659,7 +660,9 @@ mod tests {
         recompute_pace(&h.state, Utc::now());
 
         assert!(
-            h.state.display_error().is_some_and(|e| e.contains("設定檔")),
+            h.state
+                .display_error()
+                .is_some_and(|e| e.contains("設定檔")),
             "設定檔壞掉要在面板上看得到"
         );
     }

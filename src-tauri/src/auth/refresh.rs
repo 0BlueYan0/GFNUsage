@@ -213,7 +213,10 @@ mod tests {
     /// 效期由 token 本身決定，所以「快過期」的情境要一顆真的快過期的 JWT。
     fn jwt_expiring_at(at: DateTime<Utc>) -> String {
         let claims = format!(r#"{{"exp":{}}}"#, at.timestamp());
-        format!("eyJhbGciOiJSUzI1NiJ9.{}.sig", URL_SAFE_NO_PAD.encode(claims))
+        format!(
+            "eyJhbGciOiJSUzI1NiJ9.{}.sig",
+            URL_SAFE_NO_PAD.encode(claims)
+        )
     }
 
     fn base_session() -> StoredSession {
@@ -360,7 +363,10 @@ mod tests {
         manager.ensure_token().await.unwrap();
 
         assert_eq!(store.load().unwrap().unwrap().client_token, "CT-NEW");
-        assert_eq!(store.load_id_token().unwrap().as_deref(), Some(FAR_FUTURE_JWT));
+        assert_eq!(
+            store.load_id_token().unwrap().as_deref(),
+            Some(FAR_FUTURE_JWT)
+        );
     }
 
     /// 這條是 access_token 數量上限的防線：重開程序不該再要一顆。

@@ -114,7 +114,10 @@ mod tests {
         assert_eq!(sub.remaining_time_in_minutes, 6180);
         assert_eq!(sub.rolled_over_time_in_minutes, 900);
         assert!(sub.current_subscription_state.is_game_play_allowed);
-        assert_eq!(sub.notifications.notify_user_when_time_remaining_in_minutes, 300);
+        assert_eq!(
+            sub.notifications.notify_user_when_time_remaining_in_minutes,
+            300
+        );
         assert_eq!(
             sub.current_span_end_date_time.unwrap().timestamp(),
             1792108799

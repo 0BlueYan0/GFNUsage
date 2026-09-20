@@ -131,16 +131,17 @@ async fn main() {
         }
     };
 
-    let from_file = default_shared_storage_path().and_then(|path| match read_shared_storage(&path) {
-        Ok(session) => {
-            println!("GFN 客戶端    {}", mask(&session.client_token));
-            Some(session)
-        }
-        Err(e) => {
-            println!("GFN 客戶端    讀取失敗：{e}");
-            None
-        }
-    });
+    let from_file =
+        default_shared_storage_path().and_then(|path| match read_shared_storage(&path) {
+            Ok(session) => {
+                println!("GFN 客戶端    {}", mask(&session.client_token));
+                Some(session)
+            }
+            Err(e) => {
+                println!("GFN 客戶端    讀取失敗：{e}");
+                None
+            }
+        });
 
     if let (Some(a), Some(b)) = (&stored, &from_file) {
         if a.client_token == b.client_token {
@@ -157,7 +158,10 @@ async fn main() {
     let mut rotated_from: Option<ImportedSession> = None;
     let mut capped: Option<ImportedSession> = None;
 
-    for (name, session) in [("keychain", stored.as_ref()), ("GFN 客戶端", from_file.as_ref())] {
+    for (name, session) in [
+        ("keychain", stored.as_ref()),
+        ("GFN 客戶端", from_file.as_ref()),
+    ] {
         let Some(session) = session else { continue };
         if alive.is_some() {
             println!("{name:<12}  （已經找到可用的，跳過）");
@@ -184,7 +188,11 @@ async fn main() {
                     name.to_string(),
                     Minted {
                         session: ImportedSession {
-                            client_token: if same { session.client_token.clone() } else { new },
+                            client_token: if same {
+                                session.client_token.clone()
+                            } else {
+                                new
+                            },
                             sub: session.sub.clone(),
                             // 輪替不重設效期，沿用原本那個。
                             client_token_expires_at: session.client_token_expires_at,
@@ -259,7 +267,10 @@ async fn main() {
     }
 
     println!();
-    println!("=== {}. 寫回 keychain ===", if probe_rotation { 4 } else { 3 });
+    println!(
+        "=== {}. 寫回 keychain ===",
+        if probe_rotation { 4 } else { 3 }
+    );
     match keyring.save(&StoredSession::from(current.session.clone())) {
         Ok(()) => println!(
             "已把來自「{source}」的可用憑證 {} 寫回。",
@@ -270,7 +281,10 @@ async fn main() {
     // 連 id_token 一起寫回，app 下次啟動就不必再鑄一顆。
     match current.id_token.as_deref() {
         Some(id_token) => match keyring.save_id_token(id_token) {
-            Ok(()) => println!("id_token（{} 字元）也已寫回，app 啟動時會直接沿用。", id_token.len()),
+            Ok(()) => println!(
+                "id_token（{} 字元）也已寫回，app 啟動時會直接沿用。",
+                id_token.len()
+            ),
             Err(e) => println!("id_token 寫入失敗（app 啟動時會重新取得）：{e}"),
         },
         None => {

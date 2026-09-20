@@ -257,7 +257,8 @@ mod tests {
     /// 在舊紀錄裡不存在，反序列化要補成 `None` 而不是整筆讀不出來。
     #[test]
     fn ignores_the_id_token_fields_an_older_version_embedded() {
-        let legacy = r#"{"client_token":"CT123","sub":"SUB456","id_token":null,"id_token_expires_at":null}"#;
+        let legacy =
+            r#"{"client_token":"CT123","sub":"SUB456","id_token":null,"id_token_expires_at":null}"#;
         let stored: StoredSession = serde_json::from_str(legacy).unwrap();
         assert_eq!(stored, sample());
     }

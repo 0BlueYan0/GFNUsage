@@ -183,7 +183,13 @@ mod tests {
     /// 憑證死了，圖示不能還一副數字很正常的樣子。
     #[test]
     fn needs_login_shows_an_exclamation_mark() {
-        let f = face(Some(&snapshot(now())), None, Some("需要重新登入"), true, now());
+        let f = face(
+            Some(&snapshot(now())),
+            None,
+            Some("需要重新登入"),
+            true,
+            now(),
+        );
         assert_eq!(f.label, "!");
         assert_eq!(f.color, icon::state_color(DisplayState::FreeTier));
         assert_eq!(f.title, None);
@@ -193,7 +199,13 @@ mod tests {
     #[test]
     fn a_recent_error_keeps_the_number_and_reports_it_in_the_tooltip() {
         let fetched = now() - Duration::minutes(3);
-        let f = face(Some(&snapshot(fetched)), None, Some("網路錯誤：離線"), false, now());
+        let f = face(
+            Some(&snapshot(fetched)),
+            None,
+            Some("網路錯誤：離線"),
+            false,
+            now(),
+        );
         assert_eq!(f.label, "103");
         assert_eq!(f.color, icon::state_color(DisplayState::Normal));
         assert!(f.tooltip.contains("網路錯誤：離線"), "{}", f.tooltip);
@@ -204,9 +216,18 @@ mod tests {
     #[test]
     fn a_stale_snapshot_is_dimmed() {
         let fetched = now() - Duration::minutes(STALE_AFTER_MINUTES + 1);
-        let f = face(Some(&snapshot(fetched)), None, Some("網路錯誤：離線"), false, now());
+        let f = face(
+            Some(&snapshot(fetched)),
+            None,
+            Some("網路錯誤：離線"),
+            false,
+            now(),
+        );
         assert_eq!(f.label, "103");
-        assert_eq!(f.color, icon::dimmed(icon::state_color(DisplayState::Normal)));
+        assert_eq!(
+            f.color,
+            icon::dimmed(icon::state_color(DisplayState::Normal))
+        );
     }
 
     #[test]

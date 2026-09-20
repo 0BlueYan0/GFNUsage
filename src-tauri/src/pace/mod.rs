@@ -208,8 +208,13 @@ mod tests {
     }
 
     fn report(total: u32, remaining: u32) -> PaceReport {
-        compute(&snapshot(total, remaining), &Schedule::default(), now(), UTC)
-            .expect("時數方案且本期未結束，應該算得出配速")
+        compute(
+            &snapshot(total, remaining),
+            &Schedule::default(),
+            now(),
+            UTC,
+        )
+        .expect("時數方案且本期未結束，應該算得出配速")
     }
 
     fn close(actual: Option<f64>, expected: f64) {
@@ -301,7 +306,10 @@ mod tests {
         assert_eq!(r.wasted_minutes, None);
         assert_eq!(r.runs_out_at, None);
         assert!(r.over_pace_minutes.is_some(), "配速門檻不受樣本數限制");
-        assert!(r.today_budget_minutes.is_some(), "今日額度不做外推，不受限制");
+        assert!(
+            r.today_budget_minutes.is_some(),
+            "今日額度不做外推，不受限制"
+        );
     }
 
     /// spec §6.5：A_past = 0 連配速都算不出來。
