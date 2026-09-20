@@ -43,3 +43,20 @@ pub enum GfnError {
     #[error("讀取檔案失敗：{0}")]
     Io(#[from] std::io::Error),
 }
+
+/// 描述一段回應的「形狀」——只列出頂層欄位名稱，絕不吐出任何值。
+///
+/// 解析失敗時，唯一需要知道的就是「少了哪個欄位、對方到底給了什麼」，
+/// 而欄位名稱本身不是機密。沒有這個，`error decoding response body`
+/// 這句話除了再登入一次燒掉一顆 token 之外，沒有任何辦法查下去。
+pub fn describe_shape(body: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(serde_json::Value::Object(map)) => {
+            let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            format!("實際收到的欄位：{}", keys.join("、"))
+        }
+        Ok(_) => "回應是 JSON，但不是物件".to_string(),
+        Err(_) => format!("回應不是 JSON（{} bytes）", body.len()),
+    }
+}

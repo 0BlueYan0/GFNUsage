@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::auth::jwt;
 use crate::auth::store::{StoredSession, TokenStore};
-use crate::error::GfnError;
+use crate::error::{describe_shape, GfnError};
 
 pub const STARFLEET_CLIENT_ID: &str = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ";
 pub const STARFLEET_BASE: &str = "https://login.nvidia.com";
@@ -18,10 +18,87 @@ const REFRESH_MARGIN_MINUTES: i64 = 5;
 /// NVIDIA 在撞到「同時有效的 access_token 數量上限」時回應的字樣。
 const TOO_MANY_TOKENS: &str = "Max allowed simultaneous valid access_token exceeded";
 
+/// 刻意**不** derive `Debug`：這些型別裝著憑證，`{:?}` 會把內容整個印出來，
+/// 而 spec §9 規定日誌與錯誤訊息不得出現憑證。這條適用本檔所有回應型別。
+///
+/// 刷新（`grant_type=…client_token`）的回應。這一條**有** `client_token`。
 #[derive(Deserialize)]
 pub struct TokenResponse {
     pub id_token: String,
     pub client_token: String,
+}
+
+/// 授權碼換發（`grant_type=authorization_code`）的回應。
+///
+/// **沒有 `client_token`。** 登入是兩段：這一段拿 access_token 與 id_token，
+/// 再用 access_token 去 `GET /client_token` 拿 90 天的長效憑證。
+/// 依據是 GFN 客戶端 bundle 的 `redeemAuthCode`：`idToken` 取自這個回應，
+/// 而 `clientToken` 取自另一個回應。
+#[derive(Deserialize)]
+pub struct AuthCodeResponse {
+    pub access_token: String,
+    pub id_token: String,
+}
+
+/// `GET /client_token` 的回應。
+#[derive(Deserialize)]
+pub struct ClientTokenResponse {
+    pub client_token: String,
+    /// 秒。實測 7776000，剛好 90 天 —— 客戶端把它乘以 1000 存成
+    /// `clientTokenExpiryLength`。
+    #[serde(default)]
+    pub expires_in: i64,
+}
+
+/// 取一顆 90 天的 `client_token`。這是登入的第二段。
+///
+/// 授權碼換發的回應不含 `client_token`；客戶端是先拿 access_token，
+/// 再用它當 Bearer 打這個端點（bundle 的 `getStarfleetAuthorizeHeaders`
+/// 就是 `Authorization: Bearer {access_token}`）。
+///
+/// **注意這裡要的是 access_token，不是 id_token。** 兩者搞混就拿不到
+/// 長效憑證，而那是整個 90 天免登入的唯一來源。
+pub async fn get_client_token(
+    http: &reqwest::Client,
+    auth_base: &str,
+    access_token: &str,
+) -> Result<ClientTokenResponse, GfnError> {
+    let response = http
+        .get(format!("{auth_base}/client_token"))
+        .bearer_auth(access_token)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| GfnError::Network(e.to_string()))?;
+
+    let status = response.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(GfnError::RateLimited);
+    }
+    if status.is_client_error() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(if body.contains(TOO_MANY_TOKENS) {
+            GfnError::TooManyTokens
+        } else {
+            // 這是登入途中失敗，不是既有憑證被拒 —— 不要報成 NeedsLogin。
+            GfnError::LoginFailed(format!("/client_token 回應 {status}"))
+        });
+    }
+    if !status.is_success() {
+        return Err(GfnError::Network(format!("/client_token 回應 {status}")));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| GfnError::Network(e.to_string()))?;
+
+    serde_json::from_str(&body).map_err(|e| {
+        GfnError::UnexpectedResponse(format!(
+            "/client_token 的回應解析失敗：{e}；{}",
+            describe_shape(&body)
+        ))
+    })
 }
 
 /// 送一次 `/token` 並把回應分類。
@@ -33,11 +110,11 @@ pub struct TokenResponse {
 ///
 /// 4xx 一律不重試（spec §4.3 規則 3）。網路層錯誤回 `Network`，
 /// 由呼叫端決定要不要退避重試 —— 那種請求可能根本沒送達。
-pub async fn post_token(
+pub async fn post_token<T: serde::de::DeserializeOwned>(
     http: &reqwest::Client,
     auth_base: &str,
     form: &[(&str, &str)],
-) -> Result<TokenResponse, GfnError> {
+) -> Result<T, GfnError> {
     let response = http
         .post(format!("{auth_base}/token"))
         .form(form)
@@ -62,10 +139,24 @@ pub async fn post_token(
         return Err(GfnError::Network(format!("/token 回應 {status}")));
     }
 
-    response
-        .json()
+    // 先取文字再自己解析，而不是直接 `.json()`：後者失敗時只會回一句
+    // 「error decoding response body」，連少了哪個欄位都不說。
+    let body = response
+        .text()
         .await
-        .map_err(|e| GfnError::UnexpectedResponse(e.to_string()))
+        .map_err(|e| GfnError::Network(e.to_string()))?;
+
+    serde_json::from_str(&body).map_err(|e| {
+        // grant_type 是哪一條路（刷新或換碼）的唯一線索，而且它不是機密。
+        let grant = form
+            .iter()
+            .find(|(key, _)| *key == "grant_type")
+            .map_or("（未知）", |(_, value)| *value);
+        GfnError::UnexpectedResponse(format!(
+            "/token（grant_type={grant}）的回應解析失敗：{e}；{}",
+            describe_shape(&body)
+        ))
+    })
 }
 
 #[derive(Clone)]
@@ -196,7 +287,7 @@ impl TokenManager {
     }
 
     async fn refresh(&self, stored: StoredSession) -> Result<CachedToken, GfnError> {
-        let body = post_token(
+        let body = post_token::<TokenResponse>(
             &self.http,
             &self.auth_base,
             &[
@@ -319,6 +410,97 @@ mod tests {
 
     fn manager(store: Arc<dyn TokenStore>, server: &MockServer) -> TokenManager {
         TokenManager::new(store, reqwest::Client::new(), server.uri())
+    }
+
+    /// 少了一個欄位時，訊息要講出少了哪個、以及對方到底給了什麼欄位。
+    /// 只有「error decoding response body」的話，除了再登入一次燒掉一顆
+    /// token 之外沒有任何辦法查下去。
+    #[tokio::test]
+    async fn a_missing_field_is_named_along_with_what_did_arrive() {
+        let server = MockServer::start().await;
+        mount_token(
+            &server,
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "AT",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "id_token": FAR_FUTURE_JWT,
+            })),
+            1,
+        )
+        .await;
+
+        let problem = post_token::<TokenResponse>(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &[("grant_type", "authorization_code")],
+        )
+        .await
+        .err()
+        // `TokenResponse` 刻意不 derive Debug —— 它裝著憑證，`{:?}` 會把
+        // 內容整個印出來。所以這裡不能用 `unwrap_err()`。
+        .expect("這個回應應該要解析失敗")
+        .to_string();
+
+        assert!(problem.contains("client_token"), "{problem}");
+        assert!(problem.contains("access_token"), "{problem}");
+        assert!(problem.contains("authorization_code"), "{problem}");
+    }
+
+    /// spec §9：訊息裡不准出現憑證內容。欄位名稱可以，值不行。
+    #[tokio::test]
+    async fn the_diagnostic_never_leaks_a_token_value() {
+        let server = MockServer::start().await;
+        mount_token(
+            &server,
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "SECRET-ACCESS-VALUE",
+                "id_token": "SECRET-ID-VALUE",
+            })),
+            1,
+        )
+        .await;
+
+        let problem = post_token::<TokenResponse>(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &[("grant_type", "authorization_code")],
+        )
+        .await
+        .err()
+        // `TokenResponse` 刻意不 derive Debug —— 它裝著憑證，`{:?}` 會把
+        // 內容整個印出來。所以這裡不能用 `unwrap_err()`。
+        .expect("這個回應應該要解析失敗")
+        .to_string();
+
+        assert!(!problem.contains("SECRET-ACCESS-VALUE"), "{problem}");
+        assert!(!problem.contains("SECRET-ID-VALUE"), "{problem}");
+    }
+
+    /// 對方回了 HTML 錯誤頁或表單編碼時，要說得出「這根本不是 JSON」。
+    #[tokio::test]
+    async fn a_non_json_body_says_so() {
+        let server = MockServer::start().await;
+        mount_token(
+            &server,
+            ResponseTemplate::new(200).set_body_raw("<html>nope</html>", "text/html"),
+            1,
+        )
+        .await;
+
+        let problem = post_token::<TokenResponse>(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &[("grant_type", "authorization_code")],
+        )
+        .await
+        .err()
+        // `TokenResponse` 刻意不 derive Debug —— 它裝著憑證，`{:?}` 會把
+        // 內容整個印出來。所以這裡不能用 `unwrap_err()`。
+        .expect("這個回應應該要解析失敗")
+        .to_string();
+
+        assert!(problem.contains("不是 JSON"), "{problem}");
     }
 
     /// 換碼的回應已經附了一顆能用的 id_token。收下它之後，第一次

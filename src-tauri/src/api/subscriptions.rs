@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::error::GfnError;
+use crate::error::{describe_shape, GfnError};
 
 pub const MES_BASE: &str = "https://mes.geforcenow.com";
 
@@ -89,10 +89,19 @@ pub async fn fetch_subscription(
         return Err(GfnError::Network(format!("/subscriptions 回應 {status}")));
     }
 
-    response
-        .json()
+    // 同 `post_token`：`.json()` 失敗時只說「error decoding response body」，
+    // 分不出是這裡壞的還是 `/token` 壞的，也不說少了哪個欄位。
+    let body = response
+        .text()
         .await
-        .map_err(|e| GfnError::UnexpectedResponse(e.to_string()))
+        .map_err(|e| GfnError::Network(e.to_string()))?;
+
+    serde_json::from_str(&body).map_err(|e| {
+        GfnError::UnexpectedResponse(format!(
+            "/subscriptions 的回應解析失敗：{e}；{}",
+            describe_shape(&body)
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -191,5 +200,28 @@ mod tests {
 
         let result = fetch_subscription(&reqwest::Client::new(), &server.uri(), "TOKEN").await;
         assert!(matches!(result, Err(GfnError::RateLimited)));
+    }
+
+    /// 兩個端點的解析失敗以前長得一模一樣，分不出是哪一邊壞的。
+    /// 訊息必須說出是 `/subscriptions`，以及對方給了什麼欄位。
+    #[tokio::test]
+    async fn a_malformed_subscription_names_the_endpoint_and_the_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v4/subscriptions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "subType": "TIME_CAPPED",
+            })))
+            .mount(&server)
+            .await;
+
+        let problem = fetch_subscription(&reqwest::Client::new(), &server.uri(), "JWT")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(problem.contains("/subscriptions"), "{problem}");
+        assert!(problem.contains("membershipTier"), "{problem}");
+        assert!(problem.contains("subType"), "{problem}");
     }
 }
