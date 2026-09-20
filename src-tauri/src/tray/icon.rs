@@ -14,11 +14,13 @@ const MIN_PX: u32 = 8;
 /// 內嵌字型，避免依賴系統字型探索 —— 系統匣圖示需要每台機器長得一樣。
 const FONT_DATA: &[u8] = include_bytes!("../../assets/Roboto-Bold.ttf");
 
-/// 各顯示狀態的顏色。
+/// 各顯示狀態的顏色。超前消耗與已用完同為紅色（spec §7.2），
+/// 兩者靠驚嘆號區分。
 pub fn state_color(state: DisplayState) -> [u8; 3] {
     match state {
         DisplayState::Normal => [236, 236, 236],
         DisplayState::Low => [245, 158, 11],
+        DisplayState::OverPace => [239, 68, 68],
         DisplayState::Exhausted => [239, 68, 68],
         DisplayState::FreeTier => [148, 163, 184],
     }
@@ -208,6 +210,8 @@ mod tests {
 
     #[test]
     fn each_state_has_a_distinct_color() {
+        // 超前消耗與已用完刻意同為紅色（spec §7.2），兩者靠驚嘆號區分，
+        // 所以這裡只取其中一個代表紅色那一組。
         let colors = [
             state_color(DisplayState::Normal),
             state_color(DisplayState::Low),
@@ -219,6 +223,11 @@ mod tests {
                 assert_ne!(colors[i], colors[j], "狀態 {i} 與 {j} 的顏色重複了");
             }
         }
+        assert_eq!(
+            state_color(DisplayState::OverPace),
+            state_color(DisplayState::Exhausted),
+            "spec §7.2：兩者都是紅色"
+        );
     }
 
     /// 除錯用：把幾個代表性的圖示傾印成原始 RGBA，供人眼檢查。

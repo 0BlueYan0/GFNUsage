@@ -3,12 +3,17 @@ use serde::Serialize;
 
 use crate::api::subscriptions::Subscription;
 
-/// 系統匣與面板的顯示狀態。里程碑 2 會加入 `OverPace`（超前消耗）。
+/// 系統匣與面板的顯示狀態。
+///
+/// `OverPace` 不由 `from_subscription` 產生 —— 它取決於 `now` 與不可遊玩時段
+/// 設定，由 `pace::display_state()` 併進來。這個欄位永遠是「還沒併入配速」的
+/// 基礎狀態。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DisplayState {
     Normal,
     Low,
+    OverPace,
     Exhausted,
     FreeTier,
 }
