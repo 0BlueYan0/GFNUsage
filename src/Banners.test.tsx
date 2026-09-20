@@ -3,10 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import Banners from "./Banners";
 
 const DAY = 86_400_000;
-/// 多加一小時：`daysUntil` 無條件捨去，抓得剛剛好的話，測試自己跑掉的
-/// 那幾毫秒就會讓 3 天變成 2 天。
+/// 多加 90 分鐘：兩個函式都無條件捨去，抓得剛剛好的話，測試自己跑掉的
+/// 那幾毫秒就會讓 3 天變成 2 天、1 小時變成 0 小時。90 分鐘離兩個
+/// 進位邊界都夠遠。
 const inDays = (days: number) =>
-  new Date(Date.now() + days * DAY + 3_600_000).toISOString();
+  new Date(Date.now() + days * DAY + 90 * 60_000).toISOString();
 
 describe("Banners", () => {
   it("憑證剩不到七天時提醒重新登入", () => {
@@ -19,7 +20,7 @@ describe("Banners", () => {
       />,
     );
 
-    expect(screen.getByText(/再 3 天到期/)).toBeTruthy();
+    expect(screen.getByText(/再 3 天 1 小時到期/)).toBeTruthy();
   });
 
   it("憑證還很久時什麼都不說", () => {
@@ -77,5 +78,35 @@ describe("Banners", () => {
     );
 
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  /// 這是加精度的重點：剩不到一天時，舊的寫法只會說「今天到期」，
+  /// 而「還有 5 小時」跟「還有 20 分鐘」該做的事完全不同。
+  it("剩不到一天時講小時", () => {
+    const inFiveHours = new Date(Date.now() + 5 * 3_600_000 + 60_000);
+    render(
+      <Banners
+        clientTokenExpiresAt={inFiveHours.toISOString()}
+        showTrayHint={false}
+        busy={false}
+        onDismissHint={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/再 5 小時到期/)).toBeTruthy();
+  });
+
+  it("已經過期就直說過期，不講剩幾分鐘", () => {
+    const anHourAgo = new Date(Date.now() - 3_600_000);
+    render(
+      <Banners
+        clientTokenExpiresAt={anHourAgo.toISOString()}
+        showTrayHint={false}
+        busy={false}
+        onDismissHint={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/憑證已過期/)).toBeTruthy();
   });
 });

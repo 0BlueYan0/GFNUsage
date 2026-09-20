@@ -20,10 +20,33 @@ export function formatResetAt(iso: string, timeZone?: string): string {
   });
 }
 
-/** 距離重置還有幾天，無條件捨去。 */
+/** 距離某時點還有幾天，無條件捨去。給「要不要示警」這種門檻判斷用。 */
 export function daysUntil(iso: string, now: Date = new Date()): number {
   const ms = new Date(iso).getTime() - now.getTime();
   return Math.max(0, Math.floor(ms / 86_400_000));
+}
+
+/**
+ * 倒數到某個時點，精度隨剩餘長短自己縮小。
+ *
+ * 只講天數在剩不到一天時會變成「0 天」，而那正是最需要知道確切還有多久的
+ * 時候 —— 重置當天到底是還有 8 小時還是 40 分鐘，差很多。所以：
+ * 剩一天以上講到小時，剩不到一天講小時，剩不到一小時講分鐘。
+ *
+ * 底下的計算本來就是以分鐘為單位（`avail()`、配速、預測都是），
+ * 這裡只是讓顯示對得起那個精度。
+ */
+export function formatCountdown(iso: string, now: Date = new Date()): string {
+  const minutes = Math.max(
+    0,
+    Math.floor((new Date(iso).getTime() - now.getTime()) / 60_000),
+  );
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+
+  if (days > 0) return hours > 0 ? `${days} 天 ${hours} 小時` : `${days} 天`;
+  if (hours > 0) return `${hours} 小時`;
+  return `${minutes} 分鐘`;
 }
 
 /** 已使用的百分比，四捨五入到整數。 */

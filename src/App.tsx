@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import "./App.css";
 import Banners from "./Banners";
-import { daysUntil, formatHours, formatResetAt, percentUsed } from "./format";
+import { formatCountdown, formatHours, formatResetAt, percentUsed } from "./format";
 import Pace from "./Pace";
 import ScheduleForm from "./Schedule";
 import type {
@@ -42,7 +42,6 @@ function Quota({
   }
 
   const used = percentUsed(snapshot.usedMinutes, snapshot.totalMinutes);
-  const days = snapshot.spanEnd ? daysUntil(snapshot.spanEnd) : 0;
 
   return (
     <>
@@ -79,9 +78,11 @@ function Quota({
         {snapshot.spanEnd && (
           <div className="facts__row">
             <dt>重置</dt>
+            {/* 倒數不加條件：舊寫法在剩不到一天時會整句消失，
+                而那正是最該顯示的時候。 */}
             <dd title={formatResetAt(snapshot.spanEnd)}>
-              {formatResetAt(snapshot.spanEnd)}
-              {days > 0 ? `，還有 ${days} 天` : ""}
+              {formatResetAt(snapshot.spanEnd)}，還有{" "}
+              {formatCountdown(snapshot.spanEnd)}
             </dd>
           </div>
         )}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   daysUntil,
+  formatCountdown,
   formatDuration,
   formatHours,
   formatOverPace,
@@ -81,5 +82,41 @@ describe("formatOverPace", () => {
 
   it("落後時是好消息，說低於門檻", () => {
     expect(formatOverPace(-500)).toBe("低於門檻 8.3 小時");
+  });
+});
+
+describe("formatCountdown", () => {
+  const at = (iso: string) => new Date(iso);
+
+  it("一天以上同時給天與小時", () => {
+    expect(
+      formatCountdown("2026-10-16T07:59:00+08:00", at("2026-09-21T04:59:00+08:00")),
+    ).toBe("25 天 3 小時");
+  });
+
+  it("整天數時不畫蛇添足加 0 小時", () => {
+    expect(
+      formatCountdown("2026-10-16T07:59:00+08:00", at("2026-09-21T07:59:00+08:00")),
+    ).toBe("25 天");
+  });
+
+  /// 這是最重要的一條：舊的寫法在這裡會退化成「還有 0 天」，
+  /// 而剩不到一天正是最需要知道確切還有多久的時候。
+  it("不到一天就改講小時", () => {
+    expect(
+      formatCountdown("2026-10-16T07:59:00+08:00", at("2026-10-15T23:59:00+08:00")),
+    ).toBe("8 小時");
+  });
+
+  it("不到一小時就改講分鐘", () => {
+    expect(
+      formatCountdown("2026-10-16T07:59:00+08:00", at("2026-10-16T07:19:00+08:00")),
+    ).toBe("40 分鐘");
+  });
+
+  it("已經過去的時點是 0 分鐘，不給負數", () => {
+    expect(
+      formatCountdown("2026-10-16T07:59:00+08:00", at("2026-10-17T00:00:00+08:00")),
+    ).toBe("0 分鐘");
   });
 });

@@ -1,4 +1,4 @@
-import { daysUntil } from "./format";
+import { daysUntil, formatCountdown } from "./format";
 
 /** 憑證剩這麼多天以內就開始提醒（spec §4.4）。 */
 const WARN_WITHIN_DAYS = 7;
@@ -18,6 +18,10 @@ export default function Banners({
   // 只會變成「憑證今天到期」這種既嚇人又不準的話。
   const days = clientTokenExpiresAt ? daysUntil(clientTokenExpiresAt) : null;
   const expiring = days !== null && days <= WARN_WITHIN_DAYS;
+  // 剩不到一天時「再 0 天到期」等於沒講，所以倒數改用會自己縮小精度的版本。
+  const expired =
+    clientTokenExpiresAt !== null &&
+    new Date(clientTokenExpiresAt).getTime() <= Date.now();
 
   return (
     <>
@@ -33,10 +37,11 @@ export default function Banners({
         </div>
       )}
 
-      {expiring && (
+      {expiring && clientTokenExpiresAt && (
         <p className="warn">
-          {days > 0 ? `憑證再 ${days} 天到期` : "憑證今天到期"}
-          ，到期後要重新登入。現在登入一次就會再延 90 天。
+          {expired
+            ? "憑證已過期，要重新登入。"
+            : `憑證再 ${formatCountdown(clientTokenExpiresAt)}到期，到期後要重新登入。現在登入一次就會再延 90 天。`}
         </p>
       )}
     </>
