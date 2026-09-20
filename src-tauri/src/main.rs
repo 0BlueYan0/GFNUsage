@@ -13,6 +13,9 @@ use tauri::{Manager, WindowEvent};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(300);
 
+/// 迴圈的心跳。比輪詢間隔短得多，好讓睡眠喚醒在半分鐘內就被發現。
+const TICK: Duration = Duration::from_secs(30);
+
 /// 自動收起後多久之內的系統匣點擊，視為「關閉」而不是「開啟」。
 ///
 /// 點圖示會先讓面板失焦，失焦處理器把它收起來，接著點擊事件才送到 —
@@ -113,11 +116,33 @@ fn main() {
 
             // 輪詢迴圈。額度只在串流時變動，5 分鐘一次已足夠；
             // 串流中的即時警示是 GFN 客戶端自己的職責。
-            // 憑證被拒絕後暫停，直到使用者重新匯入或手動更新成功 ——
-            // 每次輪詢都會為了 401 重試再鑄一顆 token，不停的話一小時就撞上限。
+            //
+            // 心跳是 30 秒而不是 5 分鐘，為的是睡眠喚醒（spec §8）：
+            // 筆電闔上八小時再打開，使用者不該盯著一個睡前的數字等滿五分鐘。
+            // 心跳本身不做事，只比對兩個時鐘。
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                // None 代表還沒抓過，所以啟動時第一圈就會抓。
+                let mut last_poll: Option<Instant> = None;
+                let mut beat = (Instant::now(), chrono::Utc::now());
+
                 loop {
+                    let now = Instant::now();
+                    let wall = chrono::Utc::now();
+                    let woke = commands::woke_from_sleep(now - beat.0, wall - beat.1);
+                    beat = (now, wall);
+
+                    let due = woke
+                        || last_poll.map_or(true, |last| now.duration_since(last) >= POLL_INTERVAL);
+                    if !due {
+                        tokio::time::sleep(TICK).await;
+                        continue;
+                    }
+                    last_poll = Some(now);
+
+                    // 喚醒也要走這道閘門。憑證被拒絕後暫停輪詢，是因為每次抓
+                    // 都會為了 401 重試再鑄一顆 token，不停的話一小時就撞上限
+                    // —— 讓喚醒繞過它，就是把那個洞重新打開。
                     if poll_due(&state) {
                         let _ = refresh_into_state(&handle, &state).await;
                     } else {
@@ -125,7 +150,8 @@ fn main() {
                         commands::recompute_pace(&state, chrono::Utc::now());
                         tray::sync(&handle, &state);
                     }
-                    tokio::time::sleep(POLL_INTERVAL).await;
+
+                    tokio::time::sleep(TICK).await;
                 }
             });
 

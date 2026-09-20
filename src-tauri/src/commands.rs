@@ -433,6 +433,24 @@ pub fn poll_due(state: &AppState) -> bool {
     !state.needs_login.load(Ordering::SeqCst)
 }
 
+/// 牆鐘比單調時鐘多走這麼多，就當作機器剛從睡眠中醒來。
+///
+/// 30 秒的心跳加上一般的排程延遲，兩個時鐘不會差到兩分鐘。
+pub const WAKE_JUMP: chrono::Duration = chrono::Duration::minutes(2);
+
+/// 機器是不是剛從睡眠中醒來（spec §8 把「喚醒」列為輪詢時機之一）。
+///
+/// 睡眠期間牆鐘照走，`Instant` 不一定 —— Windows 上兩者的行為不保證一致，
+/// 所以看的是「兩個時鐘之間的差」而不是任一邊的絕對值。這樣就不必去碰
+/// 平台原生的電源事件，也不必為 Windows 與 macOS 各寫一份。
+///
+/// 只抓往前跳。牆鐘往回跳是 NTP 校時或使用者改時間，不是喚醒。
+pub fn woke_from_sleep(monotonic: std::time::Duration, wall: chrono::Duration) -> bool {
+    let monotonic =
+        chrono::Duration::from_std(monotonic).unwrap_or_else(|_| chrono::Duration::zero());
+    wall - monotonic > WAKE_JUMP
+}
+
 /// 把這次抓到的快照記進歷史。剩餘時數與上一筆相同時跳過（spec §8），
 /// 否則閒置一整天就會多出 288 列一模一樣的資料。
 ///
@@ -721,6 +739,43 @@ mod tests {
             .starts_with(&format!("{}/authorize?", h.server.uri())));
         // verifier 與 nonce 各自獨立產生，不能是同一個值。
         assert_ne!(pending.verifier, pending.nonce);
+    }
+
+    #[test]
+    fn a_normal_tick_is_not_a_wake_up() {
+        assert!(!woke_from_sleep(
+            std::time::Duration::from_secs(30),
+            chrono::Duration::seconds(30)
+        ));
+    }
+
+    /// 排程延遲、時鐘微調、忙碌的機器 —— 這些都會讓兩個時鐘差個幾秒，
+    /// 但差不到兩分鐘。
+    #[test]
+    fn a_small_drift_is_not_a_wake_up() {
+        assert!(!woke_from_sleep(
+            std::time::Duration::from_secs(30),
+            chrono::Duration::seconds(75)
+        ));
+    }
+
+    /// 闔上筆電八小時：牆鐘走了八小時，單調時鐘幾乎沒動。
+    #[test]
+    fn a_large_jump_is_a_wake_up() {
+        assert!(woke_from_sleep(
+            std::time::Duration::from_secs(31),
+            chrono::Duration::hours(8)
+        ));
+    }
+
+    /// 牆鐘往回跳（NTP 校時、使用者改時間）不是喚醒，也不該當成喚醒 ——
+    /// 硬要抓一次只是白白多鑄一顆 token。
+    #[test]
+    fn a_backwards_clock_is_not_a_wake_up() {
+        assert!(!woke_from_sleep(
+            std::time::Duration::from_secs(30),
+            chrono::Duration::seconds(-3600)
+        ));
     }
 
     /// 到期時刻要送到面板去，橫幅才有東西可以算。
