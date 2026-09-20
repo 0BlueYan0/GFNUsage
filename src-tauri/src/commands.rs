@@ -91,9 +91,18 @@ pub fn recompute_pace(state: &AppState, now: DateTime<Utc>) {
     match store::load(&state.schedule_path()) {
         Ok(fresh) => *state.schedule.lock().unwrap() = fresh,
         // 壞掉的設定檔要講出來，不能靜默沿用上一份：使用者手改壞了卻看到
-        // 一切正常，只會以為預測本來就長這樣。這裡在抓取之後才跑，
-        // 所以不會被 `refresh_state` 的「成功就清空錯誤」蓋掉。
-        Err(message) => *state.last_error.lock().unwrap() = Some(message),
+        // 一切正常，只會以為預測本來就長這樣。
+        //
+        // 但只在沒有別的錯誤要講時才插話。憑證失效與抓取失敗都比設定檔急，
+        // 蓋掉它們會讓系統匣的 tooltip 與登入畫面變成「設定檔格式錯誤」，
+        // 使用者就不知道該去重新匯入憑證了。抓取成功會把錯誤清空，
+        // 屆時設定檔的問題自然就講得出來。
+        Err(message) => {
+            let mut slot = state.last_error.lock().unwrap();
+            if slot.is_none() {
+                *slot = Some(message);
+            }
+        }
     }
     let schedule = read_schedule(state);
     let snapshot = state.snapshot.lock().unwrap().clone();
@@ -590,6 +599,22 @@ mod tests {
         assert!(
             h.state.pace.lock().unwrap().is_none(),
             "本期已結束就沒有配速可言"
+        );
+    }
+
+    /// 憑證失效比設定檔急。設定檔的錯誤不能蓋掉「需要重新登入」，
+    /// 否則使用者會去修設定檔而不是重新匯入憑證。
+    #[tokio::test]
+    async fn a_settings_error_does_not_mask_a_credential_error() {
+        let h = harness(false).await;
+        *h.state.last_error.lock().unwrap() = Some("需要重新登入".into());
+        std::fs::write(h.state.schedule_path(), "{ not json").unwrap();
+
+        recompute_pace(&h.state, Utc::now());
+
+        assert_eq!(
+            h.state.last_error.lock().unwrap().as_deref(),
+            Some("需要重新登入")
         );
     }
 }
