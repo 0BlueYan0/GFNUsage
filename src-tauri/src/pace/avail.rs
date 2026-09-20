@@ -229,6 +229,30 @@ pub fn avail(from: DateTime<Utc>, to: DateTime<Utc>, schedule: &Schedule, tz: Tz
     ((total - blocked).max(0) / 60) as u32
 }
 
+/// 從 `from` 起累積可遊玩時間，達到 `target_minutes` 的那個時點。
+///
+/// `until` 之前都累積不到就回傳 `None`，代表「以目前速度不會用完」。
+pub fn advance(
+    from: DateTime<Utc>,
+    target_minutes: f64,
+    until: DateTime<Utc>,
+    schedule: &Schedule,
+    tz: Tz,
+) -> Option<DateTime<Utc>> {
+    if target_minutes <= 0.0 {
+        return Some(from);
+    }
+    let mut remaining = target_minutes;
+    for (interval_from, interval_to) in free_intervals(from, until, schedule, tz) {
+        let span = (interval_to - interval_from).num_seconds() as f64 / 60.0;
+        if span >= remaining {
+            return Some(interval_from + Duration::seconds((remaining * 60.0).round() as i64));
+        }
+        remaining -= span;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use chrono_tz::America::New_York;
@@ -569,6 +593,69 @@ mod tests {
                 UTC
             ),
             1440 - 420
+        );
+    }
+
+    #[test]
+    fn advance_with_no_schedule_is_plain_addition() {
+        let empty = Schedule::default();
+        assert_eq!(
+            advance(
+                at("2026-09-20T00:00:00Z"),
+                90.0,
+                at("2026-09-21T00:00:00Z"),
+                &empty,
+                Taipei
+            ),
+            Some(at("2026-09-20T01:30:00Z"))
+        );
+    }
+
+    /// 目標落在睡覺時段之後，要跳過那 7 小時。
+    #[test]
+    fn advance_skips_a_blocked_window() {
+        // 台北 2026-09-19 22:00（= 14:00Z）起算 3 小時可遊玩時間：
+        // 22:00–24:00 可玩 2 小時，00:00–07:00 不可玩，剩下 1 小時落在 08:00。
+        assert_eq!(
+            advance(
+                at("2026-09-19T14:00:00Z"),
+                180.0,
+                at("2026-09-21T00:00:00Z"),
+                &nightly_sleep(),
+                Taipei
+            ),
+            Some(at("2026-09-20T00:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn advance_returns_none_when_the_target_is_out_of_reach() {
+        let empty = Schedule::default();
+        assert_eq!(
+            advance(
+                at("2026-09-20T00:00:00Z"),
+                2000.0,
+                at("2026-09-21T00:00:00Z"),
+                &empty,
+                Taipei
+            ),
+            None
+        );
+    }
+
+    /// 已經沒有額度了，用完的時刻就是現在。
+    #[test]
+    fn advance_to_zero_is_now() {
+        let empty = Schedule::default();
+        assert_eq!(
+            advance(
+                at("2026-09-20T00:00:00Z"),
+                0.0,
+                at("2026-09-21T00:00:00Z"),
+                &empty,
+                Taipei
+            ),
+            Some(at("2026-09-20T00:00:00Z"))
         );
     }
 }
