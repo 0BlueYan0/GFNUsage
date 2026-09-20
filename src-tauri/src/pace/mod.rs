@@ -1,3 +1,4 @@
+pub mod avail;
 pub mod schedule;
 
 use chrono_tz::Tz;
