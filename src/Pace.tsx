@@ -59,10 +59,16 @@ export default function Pace({
             {overshoot > 0
               ? `超支 ${formatDuration(overshoot)}`
               : `會剩 ${formatDuration(totalMinutes - projected)}`}
-            {pace.runsOutAt && (
+            {pace.runsOutAt ? (
               <span className="pace__runs-out">
                 {formatResetAt(pace.runsOutAt)} 用完
               </span>
+            ) : (
+              // spec §6.5：還沒玩（r = 0）或額度撐得過本期，要把話講白。
+              // 「會剩 X」講的是量，沒回答「會不會用完」。
+              overshoot <= 0 && (
+                <span className="pace__runs-out">以目前速度不會用完</span>
+              )
             )}
             {wasted !== null && wasted > 0 && (
               <span className="pace__waste">

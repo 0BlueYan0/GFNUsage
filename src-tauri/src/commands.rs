@@ -45,7 +45,7 @@ pub fn get_snapshot(state: State<'_, Arc<AppState>>) -> PanelData {
         snapshot,
         pace,
         state: display,
-        last_error: state.last_error.lock().unwrap().clone(),
+        last_error: state.display_error(),
         has_credentials: state.store.load().ok().flatten().is_some(),
         needs_login: state.needs_login.load(Ordering::SeqCst),
     }
@@ -88,21 +88,16 @@ pub fn set_schedule(
 /// 同一份快照的配速結論過幾小時就不一樣了。
 /// 順便從檔案重讀設定，使用者手動改檔案不必重開程式。
 pub fn recompute_pace(state: &AppState, now: DateTime<Utc>) {
+    // 壞掉的設定檔要講出來，不能靜默沿用上一份：使用者手改壞了卻看到
+    // 一切正常，只會以為預測本來就長這樣。訊息存在自己的格子裡，
+    // 檔案修好的下一輪就清掉，不必等抓取成功。顯示順序由
+    // `AppState::display_error()` 決定：憑證與抓取的問題比設定檔急。
     match store::load(&state.schedule_path()) {
-        Ok(fresh) => *state.schedule.lock().unwrap() = fresh,
-        // 壞掉的設定檔要講出來，不能靜默沿用上一份：使用者手改壞了卻看到
-        // 一切正常，只會以為預測本來就長這樣。
-        //
-        // 但只在沒有別的錯誤要講時才插話。憑證失效與抓取失敗都比設定檔急，
-        // 蓋掉它們會讓系統匣的 tooltip 與登入畫面變成「設定檔格式錯誤」，
-        // 使用者就不知道該去重新匯入憑證了。抓取成功會把錯誤清空，
-        // 屆時設定檔的問題自然就講得出來。
-        Err(message) => {
-            let mut slot = state.last_error.lock().unwrap();
-            if slot.is_none() {
-                *slot = Some(message);
-            }
+        Ok(fresh) => {
+            *state.schedule.lock().unwrap() = fresh;
+            *state.settings_error.lock().unwrap() = None;
         }
+        Err(message) => *state.settings_error.lock().unwrap() = Some(message),
     }
     let schedule = read_schedule(state);
     let snapshot = state.snapshot.lock().unwrap().clone();
@@ -573,11 +568,24 @@ mod tests {
 
         recompute_pace(&h.state, Utc::now());
 
-        let error = h.state.last_error.lock().unwrap().clone();
         assert!(
-            error.is_some_and(|e| e.contains("設定檔")),
-            "設定檔壞掉要寫進 last_error"
+            h.state.display_error().is_some_and(|e| e.contains("設定檔")),
+            "設定檔壞掉要在面板上看得到"
         );
+    }
+
+    /// 檔案修好了訊息就要消失，不必等下一次抓取成功。
+    #[tokio::test]
+    async fn a_repaired_settings_file_clears_the_message() {
+        let h = harness(false).await;
+        std::fs::write(h.state.schedule_path(), "{ not json").unwrap();
+        recompute_pace(&h.state, Utc::now());
+        assert!(h.state.display_error().is_some());
+
+        std::fs::write(h.state.schedule_path(), r#"{"weekly":[],"exceptions":[]}"#).unwrap();
+        recompute_pace(&h.state, Utc::now());
+
+        assert_eq!(h.state.display_error(), None);
     }
 
     /// 憑證死了就不抓，本期過不過期都一樣：每抓一次都會為了 401 重試再鑄一顆
@@ -612,9 +620,8 @@ mod tests {
 
         recompute_pace(&h.state, Utc::now());
 
-        assert_eq!(
-            h.state.last_error.lock().unwrap().as_deref(),
-            Some("需要重新登入")
-        );
+        assert_eq!(h.state.display_error().as_deref(), Some("需要重新登入"));
+        // 設定檔的問題沒有被丟掉，只是排在後面等憑證修好。
+        assert!(h.state.settings_error.lock().unwrap().is_some());
     }
 }

@@ -203,17 +203,26 @@ export default function App() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [load, refreshInBackground]);
 
+  /**
+   * 跑一個會動到後端狀態的動作：期間鎖住按鈕，結束後一律重新載入面板資料。
+   *
+   * 失敗往外丟，由呼叫端決定怎麼講。設定的儲存需要這個 —— 它的錯誤
+   * 不會寫進 `last_error`，吞掉就等於整個消失。
+   */
   const run = async (task: () => Promise<unknown>) => {
     setBusy(true);
     try {
       await task();
-    } catch {
-      // 匯入、解除連結、立即更新失敗時，後端都會把錯誤寫進 state，
-      // 下面的 load() 會取回來顯示。
     } finally {
       await load();
       setBusy(false);
     }
+  };
+
+  // 匯入、解除連結、立即更新失敗時，後端都會把錯誤寫進 state，
+  // `run()` 的 load() 會取回來顯示，所以這裡吞掉就好。
+  const runQuietly = (task: () => Promise<unknown>) => {
+    void run(task).catch(() => {});
   };
 
   if (!data) {
@@ -224,20 +233,8 @@ export default function App() {
     );
   }
 
-  if (!data.hasCredentials || data.needsLogin) {
-    return (
-      <SignIn
-        busy={busy}
-        error={data.lastError}
-        needsLogin={data.needsLogin}
-        onImportLocal={() => void run(() => invoke("import_from_local_gfn"))}
-        onImportManual={(value) =>
-          void run(() => invoke("import_manual", { data: value }))
-        }
-      />
-    );
-  }
-
+  // 設定畫面排在憑證判斷之前：時段設定與帳號無關，背景輪詢剛好把憑證
+  // 判死時，不該把使用者正在填的一整排時段無聲清掉。
   if (schedule) {
     return (
       <ScheduleForm
@@ -245,10 +242,25 @@ export default function App() {
         busy={busy}
         onClose={() => setSchedule(null)}
         onSave={(next) =>
-          void run(async () => {
+          // 這裡不吞錯誤：reject 會被表單接住，顯示在儲存鍵上方。
+          run(async () => {
             await invoke("set_schedule", { schedule: next });
             setSchedule(null);
           })
+        }
+      />
+    );
+  }
+
+  if (!data.hasCredentials || data.needsLogin) {
+    return (
+      <SignIn
+        busy={busy}
+        error={data.lastError}
+        needsLogin={data.needsLogin}
+        onImportLocal={() => runQuietly(() => invoke("import_from_local_gfn"))}
+        onImportManual={(value) =>
+          runQuietly(() => invoke("import_manual", { data: value }))
         }
       />
     );
@@ -292,7 +304,7 @@ export default function App() {
         <button
           className="primary"
           disabled={busy}
-          onClick={() => void run(() => invoke("refresh_now"))}
+          onClick={() => runQuietly(() => invoke("refresh_now"))}
         >
           {busy ? "更新中…" : "立即更新"}
         </button>
@@ -312,7 +324,7 @@ export default function App() {
         <button
           className="link"
           disabled={busy}
-          onClick={() => void run(() => invoke("sign_out"))}
+          onClick={() => runQuietly(() => invoke("sign_out"))}
         >
           解除連結
         </button>

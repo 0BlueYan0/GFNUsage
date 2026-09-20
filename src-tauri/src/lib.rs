@@ -43,6 +43,10 @@ pub struct AppState {
     pub snapshot: Mutex<Option<QuotaSnapshot>>,
     pub last_error: Mutex<Option<String>>,
 
+    /// 設定檔讀不動時的訊息。與 `last_error` 分開存，檔案修好就能單獨清掉
+    /// —— 混在同一格裡分不出該清哪一個，修好了訊息還會繼續掛著。
+    pub settings_error: Mutex<Option<String>>,
+
     /// 設定檔所在目錄。由 `AppHandle` 在啟動時解析，測試注入暫存目錄。
     pub settings_dir: PathBuf,
 
@@ -104,6 +108,7 @@ impl AppState {
             pace: Mutex::new(None),
             schedule: Mutex::new(schedule),
             last_error: Mutex::new(None),
+            settings_error: Mutex::new(None),
             needs_login: AtomicBool::new(false),
             last_auto_hide: Mutex::new(None),
         }
@@ -111,5 +116,14 @@ impl AppState {
 
     pub fn schedule_path(&self) -> PathBuf {
         crate::store::schedule_path(&self.settings_dir)
+    }
+
+    /// 面板與系統匣要顯示的錯誤。
+    ///
+    /// 憑證失效與抓取失敗都比設定檔急：蓋掉它們會讓 tooltip 與登入畫面變成
+    /// 「設定檔格式錯誤」，使用者就不知道該去重新匯入憑證了。
+    pub fn display_error(&self) -> Option<String> {
+        let last = self.last_error.lock().unwrap().clone();
+        last.or_else(|| self.settings_error.lock().unwrap().clone())
     }
 }

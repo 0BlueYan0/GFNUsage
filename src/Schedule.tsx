@@ -3,17 +3,33 @@ import type { Schedule, ScheduleException, WeeklyWindow } from "./types";
 
 const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
 
+const MINUTES_PER_DAY = 1440;
+
+/** 新增時段的預設值：每天 00:00–07:00，也就是睡覺。 */
+const DEFAULT_END_MINUTE = 420;
+
 /**
  * 分鐘數轉 `<input type="time">` 吃的 HH:MM。
  *
- * 1440 顯示為 24:00 會被瀏覽器拒絕，所以收斂回 00:00 —— 整天的時段
- * 在資料上是 `0 → 1440`，畫面上就是 00:00 到 00:00。
+ * 1440 顯示為 24:00 會被瀏覽器拒絕，所以收斂回 00:00。對 `start > 0` 的時段
+ * 這樣讀是對的（10:00–00:00 就是玩到午夜），`0 → 1440` 的整天時段則不走
+ * 這條路 —— 它由「整天」勾選框表示，見 `isWholeDay()`。
  */
 function toTimeValue(minutes: number): string {
-  const wrapped = minutes % 1440;
+  const wrapped = minutes % MINUTES_PER_DAY;
   const h = Math.floor(wrapped / 60);
   const m = wrapped % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/**
+ * 整天的時段在資料上是 `0 → 1440`。
+ *
+ * 用時間輸入框表示不了：24:00 瀏覽器不收，收斂成 00:00 又會變成
+ * `0 → 0`，被兩端的 `validate()` 當成零長度擋掉。所以獨立成一個勾選框。
+ */
+function isWholeDay(window: WeeklyWindow): boolean {
+  return window.startMinute === 0 && window.endMinute === MINUTES_PER_DAY;
 }
 
 function fromTimeValue(value: string): number {
@@ -29,10 +45,21 @@ function validate(schedule: Schedule): string | null {
       return "時段的起訖時間不能相同";
   }
   for (const exception of schedule.exceptions) {
+    // 清空的日期欄位是空字串。`"2026-09-20" < ""` 是 false，靠下面那行擋不住，
+    // 送到 Rust 端則是 `NaiveDate` 反序列化失敗 —— 連命令都進不去。
+    if (!exception.startDate || !exception.endDate)
+      return "例外的日期還沒填完";
     if (exception.endDate < exception.startDate)
       return "例外的結束日期早於開始日期";
   }
   return null;
+}
+
+/** Tauri 的 `Result<_, String>` 以字串 reject；其他情況退回字串化。 */
+function messageOf(reason: unknown): string {
+  if (typeof reason === "string") return reason;
+  if (reason instanceof Error) return reason.message;
+  return String(reason);
 }
 
 /**
@@ -62,7 +89,8 @@ export default function ScheduleForm({
 }: {
   value: Schedule;
   busy: boolean;
-  onSave: (schedule: Schedule) => void;
+  /// 回傳的 promise 被 reject 時，訊息會顯示在表單上。
+  onSave: (schedule: Schedule) => Promise<void> | void;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<Schedule>(value);
@@ -91,10 +119,16 @@ export default function ScheduleForm({
     });
   };
 
+  // 後端也會驗一次，而且擋得到這裡擋不到的東西（寫檔失敗、手改壞的欄位）。
+  // 那個錯誤一定要接回來顯示 —— 不然按下儲存就是毫無反應，
+  // 使用者只會以為程式當了，設定其實一個字都沒進去。
   const save = () => {
     const problem = validate(draft);
     setError(problem);
-    if (!problem) onSave(draft);
+    if (problem) return;
+    void Promise.resolve(onSave(draft)).catch((reason) =>
+      setError(messageOf(reason)),
+    );
   };
 
   const empty = draft.weekly.length === 0 && draft.exceptions.length === 0;
@@ -135,27 +169,48 @@ export default function ScheduleForm({
           </div>
 
           <div className="window__times">
-            <input
-              type="time"
-              aria-label="開始時間"
-              value={toTimeValue(window.startMinute)}
-              onChange={(e) =>
-                patchWindow(index, {
-                  startMinute: fromTimeValue(e.target.value),
-                })
-              }
-            />
-            <span>–</span>
-            <input
-              type="time"
-              aria-label="結束時間"
-              value={toTimeValue(window.endMinute)}
-              onChange={(e) =>
-                patchWindow(index, { endMinute: fromTimeValue(e.target.value) })
-              }
-            />
-            {window.endMinute <= window.startMinute && (
-              <span className="note">跨日</span>
+            <label className="window__allday">
+              <input
+                type="checkbox"
+                checked={isWholeDay(window)}
+                onChange={(e) =>
+                  patchWindow(
+                    index,
+                    e.target.checked
+                      ? { startMinute: 0, endMinute: MINUTES_PER_DAY }
+                      : { startMinute: 0, endMinute: DEFAULT_END_MINUTE },
+                  )
+                }
+              />
+              整天
+            </label>
+            {!isWholeDay(window) && (
+              <>
+                <input
+                  type="time"
+                  aria-label="開始時間"
+                  value={toTimeValue(window.startMinute)}
+                  onChange={(e) =>
+                    patchWindow(index, {
+                      startMinute: fromTimeValue(e.target.value),
+                    })
+                  }
+                />
+                <span>–</span>
+                <input
+                  type="time"
+                  aria-label="結束時間"
+                  value={toTimeValue(window.endMinute)}
+                  onChange={(e) =>
+                    patchWindow(index, {
+                      endMinute: fromTimeValue(e.target.value),
+                    })
+                  }
+                />
+                {window.endMinute <= window.startMinute && (
+                  <span className="note">跨日</span>
+                )}
+              </>
             )}
           </div>
 
@@ -192,7 +247,7 @@ export default function ScheduleForm({
               {
                 weekdays: [0, 1, 2, 3, 4, 5, 6],
                 startMinute: 0,
-                endMinute: 420,
+                endMinute: DEFAULT_END_MINUTE,
                 note: "",
               },
             ],

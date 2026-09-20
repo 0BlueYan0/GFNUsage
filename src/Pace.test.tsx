@@ -101,4 +101,27 @@ describe("Pace", () => {
     expect(screen.getByText(/本期已無可遊玩時間/)).toBeTruthy();
     expect(screen.queryByText(/今天還能玩/)).toBeNull();
   });
+  /// spec §6.5：還沒玩或額度撐得過本期，要把「不會用完」講出來。
+  it("不會用完時講明白", () => {
+    render(
+      <Pace
+        pace={report({ runsOutAt: null, overshootMinutes: -1500 })}
+        usedMinutes={1500}
+        totalMinutes={6000}
+      />,
+    );
+    expect(screen.getByText(/以目前速度不會用完/)).toBeTruthy();
+  });
+
+  /// 超支時一定算得出用完的時點，不該出現自相矛盾的兩句話。
+  it("超支時不說不會用完", () => {
+    render(
+      <Pace
+        pace={report({ runsOutAt: null, overshootMinutes: 600 })}
+        usedMinutes={1500}
+        totalMinutes={6000}
+      />,
+    );
+    expect(screen.queryByText(/以目前速度不會用完/)).toBeNull();
+  });
 });

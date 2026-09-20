@@ -86,6 +86,63 @@ describe("ScheduleForm", () => {
     expect(onSave).toHaveBeenCalledWith(overnight);
   });
 
+  /// 後端擋下來的東西（寫檔失敗、這裡沒鏡射到的規則）一定要看得見，
+  /// 不然按下儲存就是毫無反應。
+  it("後端拒絕時把訊息顯示在表單上", async () => {
+    const onSave = vi.fn().mockRejectedValue("寫入設定檔失敗：拒絕存取");
+    render(
+      <ScheduleForm value={workdays} busy={false} onSave={onSave} onClose={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "儲存" }));
+    expect(await screen.findByText(/寫入設定檔失敗/)).toBeTruthy();
+  });
+
+  /// 整天是 `0 → 1440`，用時間輸入框會變成 00:00–00:00，看起來就是壞的。
+  it("整天的時段顯示成勾選框而不是兩個 00:00", () => {
+    const allDay: Schedule = {
+      weekly: [{ weekdays: [5, 6], startMinute: 0, endMinute: 1440, note: "" }],
+      exceptions: [],
+    };
+    render(
+      <ScheduleForm value={allDay} busy={false} onSave={vi.fn()} onClose={vi.fn()} />,
+    );
+    expect(screen.getByRole("checkbox", { name: "整天" })).toBeTruthy();
+    expect(screen.queryByLabelText("開始時間")).toBeNull();
+  });
+
+  it("勾起整天後存出 0 到 1440", () => {
+    const onSave = vi.fn();
+    render(
+      <ScheduleForm value={empty} busy={false} onSave={onSave} onClose={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "新增每週時段" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "整天" }));
+    fireEvent.click(screen.getByRole("button", { name: "儲存" }));
+    expect(onSave).toHaveBeenCalledWith({
+      weekly: [
+        { weekdays: [0, 1, 2, 3, 4, 5, 6], startMinute: 0, endMinute: 1440, note: "" },
+      ],
+      exceptions: [],
+    });
+  });
+
+  /// 清空的日期是空字串，`"2026-09-20" < ""` 擋不住，Rust 端則是連命令都進不去。
+  it("日期被清空時擋下存檔", () => {
+    const blank: Schedule = {
+      weekly: [],
+      exceptions: [
+        { startDate: "", endDate: "2026-10-01", kind: "blocked", note: "" },
+      ],
+    };
+    const onSave = vi.fn();
+    render(
+      <ScheduleForm value={blank} busy={false} onSave={onSave} onClose={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "儲存" }));
+    expect(screen.getByText(/日期還沒填完/)).toBeTruthy();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it("結束日期早於開始日期時擋下存檔", () => {
     const backwards: Schedule = {
       weekly: [],

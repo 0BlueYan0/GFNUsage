@@ -325,6 +325,14 @@ textarea {
   align-items: center;
 }
 
+.window__allday {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+
 .window__foot input[type="text"] {
   flex: 1;
   min-width: 0;

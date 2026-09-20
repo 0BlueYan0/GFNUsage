@@ -131,7 +131,7 @@ pub fn sync<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
     };
     let snapshot = state.snapshot.lock().unwrap().clone();
     let pace = state.pace.lock().unwrap().clone();
-    let error = state.last_error.lock().unwrap().clone();
+    let error = state.display_error();
     let needs_login = state.needs_login.load(Ordering::SeqCst);
     apply_face(
         &tray,
