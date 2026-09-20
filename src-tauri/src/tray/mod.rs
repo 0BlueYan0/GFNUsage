@@ -130,15 +130,14 @@ pub fn sync<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
         return;
     };
     let snapshot = state.snapshot.lock().unwrap().clone();
+    let pace = state.pace.lock().unwrap().clone();
     let error = state.last_error.lock().unwrap().clone();
     let needs_login = state.needs_login.load(Ordering::SeqCst);
     apply_face(
         &tray,
         &face(
             snapshot.as_ref(),
-            // Task 6 會改成讀 `state.pace`。在那之前系統匣照常運作，
-            // 只是還不會顯示超前消耗。
-            None,
+            pace.as_ref(),
             error.as_deref(),
             needs_login,
             Utc::now(),

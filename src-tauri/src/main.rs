@@ -74,7 +74,11 @@ fn show_panel(window: &WebviewWindow, near: PhysicalPosition<f64>) {
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            let state = Arc::new(AppState::new());
+            let settings_dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|e| format!("找不到設定目錄：{e}"))?;
+            let state = Arc::new(AppState::new(settings_dir));
             app.manage(state.clone());
 
             // 標準 flyout 行為：點到別的地方就收起來。
@@ -152,6 +156,10 @@ fn main() {
                 loop {
                     if poll_due(&state) {
                         let _ = refresh_into_state(&handle, &state).await;
+                    } else {
+                        // 沒抓也要重算：A_past 變大會讓配速結論翻轉。
+                        commands::recompute_pace(&state, chrono::Utc::now());
+                        tray::sync(&handle, &state);
                     }
                     tokio::time::sleep(POLL_INTERVAL).await;
                 }
@@ -161,6 +169,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
+            commands::get_schedule,
+            commands::set_schedule,
             commands::import_from_local_gfn,
             commands::import_manual,
             commands::refresh_now,

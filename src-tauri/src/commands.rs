@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Runtime, State};
 
@@ -10,7 +10,10 @@ use crate::auth::session::{
     decode_session_data, default_shared_storage_path, read_shared_storage, ImportedSession,
 };
 use crate::error::GfnError;
-use crate::quota::QuotaSnapshot;
+use crate::pace::schedule::Schedule;
+use crate::pace::{self, PaceReport};
+use crate::quota::{DisplayState, QuotaSnapshot};
+use crate::store;
 use crate::tray;
 use crate::AppState;
 
@@ -18,6 +21,11 @@ use crate::AppState;
 #[serde(rename_all = "camelCase")]
 pub struct PanelData {
     pub snapshot: Option<QuotaSnapshot>,
+    /// 配速與預測。免費方案或本期已結束時為 `None`。
+    pub pace: Option<PaceReport>,
+    /// 併入配速後的顯示狀態。面板一律看這個，不要看 `snapshot.state`
+    /// —— 那個是還沒併入配速的基礎狀態。
+    pub state: DisplayState,
     pub last_error: Option<String>,
     pub has_credentials: bool,
     /// 憑證被拒絕。面板應回到匯入畫面；輪詢已暫停。
@@ -26,12 +34,73 @@ pub struct PanelData {
 
 #[tauri::command]
 pub fn get_snapshot(state: State<'_, Arc<AppState>>) -> PanelData {
+    let snapshot = state.snapshot.lock().unwrap().clone();
+    let pace = state.pace.lock().unwrap().clone();
+    let display = match snapshot.as_ref() {
+        Some(snapshot) => pace::display_state(snapshot, pace.as_ref()),
+        None => DisplayState::Normal,
+    };
+
     PanelData {
-        snapshot: state.snapshot.lock().unwrap().clone(),
+        snapshot,
+        pace,
+        state: display,
         last_error: state.last_error.lock().unwrap().clone(),
         has_credentials: state.store.load().ok().flatten().is_some(),
         needs_login: state.needs_login.load(Ordering::SeqCst),
     }
+}
+
+/// 目前生效的設定。
+pub fn read_schedule(state: &AppState) -> Schedule {
+    state.schedule.lock().unwrap().clone()
+}
+
+/// 寫入設定並更新記憶體快取。內容不合法時原封不動回報錯誤。
+pub fn write_schedule(state: &AppState, schedule: Schedule) -> Result<(), String> {
+    store::save(&state.schedule_path(), &schedule)?;
+    *state.schedule.lock().unwrap() = schedule;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_schedule(state: State<'_, Arc<AppState>>) -> Schedule {
+    read_schedule(state.inner())
+}
+
+#[tauri::command]
+pub fn set_schedule(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    schedule: Schedule,
+) -> Result<(), String> {
+    let state = state.inner();
+    write_schedule(state, schedule)?;
+    // 設定一改，門檻與預測立刻不同 —— 系統匣不能等到下個週期才更新。
+    recompute_pace(state, Utc::now());
+    tray::sync(&app, state);
+    Ok(())
+}
+
+/// 依目前快照與設定重算配速，結果寫回共用狀態。
+///
+/// 每個輪詢週期都要呼叫，即使這次抓取失敗：`A_past` 隨時間變大，
+/// 同一份快照的配速結論過幾小時就不一樣了。
+/// 順便從檔案重讀設定，使用者手動改檔案不必重開程式。
+pub fn recompute_pace(state: &AppState, now: DateTime<Utc>) {
+    match store::load(&state.schedule_path()) {
+        Ok(fresh) => *state.schedule.lock().unwrap() = fresh,
+        // 壞掉的設定檔要講出來，不能靜默沿用上一份：使用者手改壞了卻看到
+        // 一切正常，只會以為預測本來就長這樣。這裡在抓取之後才跑，
+        // 所以不會被 `refresh_state` 的「成功就清空錯誤」蓋掉。
+        Err(message) => *state.last_error.lock().unwrap() = Some(message),
+    }
+    let schedule = read_schedule(state);
+    let snapshot = state.snapshot.lock().unwrap().clone();
+    let report = snapshot
+        .as_ref()
+        .and_then(|snapshot| pace::compute(snapshot, &schedule, now, pace::machine_tz()));
+    *state.pace.lock().unwrap() = report;
 }
 
 /// 從本機安裝的 GFN 客戶端匯入憑證。
@@ -154,6 +223,7 @@ fn record_error(state: &AppState, message: String) -> String {
 
 fn reset_state(state: &AppState) {
     *state.snapshot.lock().unwrap() = None;
+    *state.pace.lock().unwrap() = None;
     *state.last_error.lock().unwrap() = None;
     state.needs_login.store(false, Ordering::SeqCst);
 }
@@ -209,6 +279,7 @@ pub async fn refresh_into_state<R: Runtime>(
     state: &Arc<AppState>,
 ) -> Result<QuotaSnapshot, String> {
     let result = refresh_state(state).await;
+    recompute_pace(state, Utc::now());
     tray::sync(app, state);
     result
 }
@@ -233,6 +304,8 @@ mod tests {
         server: MockServer,
         store: Arc<MemoryStore>,
         state: Arc<AppState>,
+        /// 綁著生命週期，drop 掉就會刪除暫存目錄。
+        _settings: tempfile::TempDir,
     }
 
     async fn harness(linked: bool) -> Harness {
@@ -246,16 +319,19 @@ mod tests {
                 })
                 .unwrap();
         }
+        let settings = tempfile::tempdir().unwrap();
         let state = Arc::new(AppState::with(
             store.clone(),
             reqwest::Client::new(),
             &server.uri(),
             &server.uri(),
+            settings.path().to_path_buf(),
         ));
         Harness {
             server,
             store,
             state,
+            _settings: settings,
         }
     }
 
@@ -414,5 +490,106 @@ mod tests {
         assert!(h.state.snapshot.lock().unwrap().is_some());
         assert!(last_error(&h.state).unwrap().contains("網路錯誤"));
         assert!(!needs_login(&h.state));
+    }
+
+    #[tokio::test]
+    async fn the_schedule_round_trips_through_the_commands() {
+        use crate::pace::schedule::{Schedule, WeeklyWindow};
+
+        let h = harness(false).await;
+        let schedule = Schedule {
+            weekly: vec![WeeklyWindow {
+                weekdays: vec![0, 1, 2, 3, 4],
+                start_minute: 540,
+                end_minute: 1080,
+                note: "上班".into(),
+            }],
+            exceptions: Vec::new(),
+        };
+
+        write_schedule(&h.state, schedule.clone()).unwrap();
+        assert_eq!(read_schedule(&h.state), schedule);
+        assert!(h.state.schedule_path().exists());
+    }
+
+    #[tokio::test]
+    async fn an_invalid_schedule_is_refused_and_the_old_one_survives() {
+        use crate::pace::schedule::{Schedule, WeeklyWindow};
+
+        let h = harness(false).await;
+        let bad = Schedule {
+            weekly: vec![WeeklyWindow {
+                weekdays: vec![],
+                start_minute: 0,
+                end_minute: 60,
+                note: String::new(),
+            }],
+            exceptions: Vec::new(),
+        };
+        assert!(write_schedule(&h.state, bad).is_err());
+        assert_eq!(read_schedule(&h.state), Schedule::default());
+    }
+
+    /// 抓取成功後配速要跟著算好，面板不必自己再要一次。
+    #[tokio::test]
+    async fn refreshing_also_computes_the_pace() {
+        let h = harness(true).await;
+        mount_token(&h.server, 1).await;
+        mount_subscriptions(&h.server, subscriptions_ok()).await;
+
+        refresh_state(&h.state).await.unwrap();
+        recompute_pace(&h.state, Utc::now());
+
+        assert!(h.state.pace.lock().unwrap().is_some());
+    }
+
+    /// 抓取失敗時配速照算：A_past 會隨時間變大，狀態可能翻轉。
+    #[tokio::test]
+    async fn the_pace_is_recomputed_even_without_a_fresh_snapshot() {
+        let h = harness(true).await;
+        mount_token(&h.server, 1).await;
+        mount_subscriptions(&h.server, subscriptions_ok()).await;
+        refresh_state(&h.state).await.unwrap();
+
+        *h.state.pace.lock().unwrap() = None;
+        recompute_pace(&h.state, Utc::now());
+        assert!(h.state.pace.lock().unwrap().is_some());
+    }
+
+    /// 手動改壞設定檔要看得見，不能靜默沿用上一份。
+    #[tokio::test]
+    async fn a_broken_settings_file_is_reported_to_the_panel() {
+        let h = harness(false).await;
+        std::fs::write(h.state.schedule_path(), "{ not json").unwrap();
+
+        recompute_pace(&h.state, Utc::now());
+
+        let error = h.state.last_error.lock().unwrap().clone();
+        assert!(
+            error.is_some_and(|e| e.contains("設定檔")),
+            "設定檔壞掉要寫進 last_error"
+        );
+    }
+
+    /// 憑證死了就不抓，本期過不過期都一樣：每抓一次都會為了 401 重試再鑄一顆
+    /// token。過期的快照由 `pace::compute()` 回傳 `None` 擋掉，不需要靠輪詢。
+    #[tokio::test]
+    async fn a_rejected_credential_still_pauses_polling_when_the_span_has_ended() {
+        let h = harness(true).await;
+        mount_token(&h.server, 1).await;
+        mount_subscriptions(&h.server, subscriptions_ok()).await;
+        refresh_state(&h.state).await.unwrap();
+
+        h.state.needs_login.store(true, Ordering::SeqCst);
+        let mut guard = h.state.snapshot.lock().unwrap();
+        guard.as_mut().unwrap().span_end = Some(Utc::now() - chrono::Duration::days(1));
+        drop(guard);
+
+        assert!(!poll_due(&h.state));
+        recompute_pace(&h.state, Utc::now());
+        assert!(
+            h.state.pace.lock().unwrap().is_none(),
+            "本期已結束就沒有配速可言"
+        );
     }
 }

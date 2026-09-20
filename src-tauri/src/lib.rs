@@ -7,6 +7,7 @@ pub mod quota;
 pub mod store;
 pub mod tray;
 
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -14,6 +15,8 @@ use std::time::{Duration, Instant};
 use crate::api::subscriptions::MES_BASE;
 use crate::auth::refresh::{TokenManager, STARFLEET_BASE};
 use crate::auth::store::{KeyringStore, TokenStore};
+use crate::pace::schedule::Schedule;
+use crate::pace::PaceReport;
 use crate::quota::QuotaSnapshot;
 
 /// 單次 HTTP 請求的上限。刷新在 mutex 內進行，沒有上限的話一次卡住的連線
@@ -40,6 +43,15 @@ pub struct AppState {
     pub snapshot: Mutex<Option<QuotaSnapshot>>,
     pub last_error: Mutex<Option<String>>,
 
+    /// 設定檔所在目錄。由 `AppHandle` 在啟動時解析，測試注入暫存目錄。
+    pub settings_dir: PathBuf,
+
+    /// 最近一次算出的配速。跟著快照一起被系統匣與面板讀取。
+    pub pace: Mutex<Option<PaceReport>>,
+
+    /// 設定的記憶體快取。每個輪詢週期會從檔案重讀，手動改檔案不必重開程式。
+    pub schedule: Mutex<Schedule>,
+
     /// 憑證被拒絕（401 重試後仍失敗）。這個旗標會黏住：輪詢暫停，直到
     /// 使用者重新匯入或手動更新成功。否則每個週期都會為了 401 重試再鑄一顆
     /// token，一小時內就把「同時有效 token 上限」撞滿。
@@ -54,12 +66,13 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(settings_dir: PathBuf) -> Self {
         Self::with(
             Arc::new(KeyringStore),
             http_client(HTTP_TIMEOUT),
             STARFLEET_BASE,
             MES_BASE,
+            settings_dir,
         )
     }
 
@@ -69,28 +82,34 @@ impl AppState {
         http: reqwest::Client,
         auth_base: &str,
         mes_base: &str,
+        settings_dir: PathBuf,
     ) -> Self {
         let tokens = Arc::new(TokenManager::new(
             store.clone(),
             http.clone(),
             auth_base.to_string(),
         ));
+        // 啟動時讀不到或讀壞了就先用空設定；第一個輪詢週期會再讀一次，
+        // 並把錯誤寫進 `last_error` 讓面板看得到。
+        let schedule =
+            crate::store::load(&crate::store::schedule_path(&settings_dir)).unwrap_or_default();
 
         Self {
             tokens,
             store,
             http,
             mes_base: mes_base.to_string(),
+            settings_dir,
             snapshot: Mutex::new(None),
+            pace: Mutex::new(None),
+            schedule: Mutex::new(schedule),
             last_error: Mutex::new(None),
             needs_login: AtomicBool::new(false),
             last_auto_hide: Mutex::new(None),
         }
     }
-}
 
-impl Default for AppState {
-    fn default() -> Self {
-        Self::new()
+    pub fn schedule_path(&self) -> PathBuf {
+        crate::store::schedule_path(&self.settings_dir)
     }
 }
