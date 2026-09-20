@@ -5,10 +5,12 @@ system tray or the macOS menu bar.
 
 [繁體中文說明](README.zh-TW.md)
 
-> **Status:** milestone 1 is done. GFNUsage imports credentials from a
-> local GeForce NOW install, refreshes them on its own, and shows the
-> remaining hours in the Windows tray or the macOS menu bar. Pace
-> thresholds and prediction land in milestone 2.
+> **Status:** milestone 2 is done. On top of the tray display, GFNUsage
+> now works out whether you are ahead of pace, when the quota runs out,
+> how long you can play today, and how many rollover hours you are on
+> track to waste — all measured against the hours you can actually play,
+> which you set up in the panel. OAuth login and settings export land in
+> milestone 3.
 
 ## Why
 
@@ -22,17 +24,17 @@ burning through it too fast.
 
 - ✅ **Remaining hours, always visible** — no need to open the GFN client
 - ✅ **Rollover and purchased time** — shown as part of the period's total
-- **Pace threshold** — how much *should* you have used by now? Go past it
+- ✅ **Pace threshold** — how much *should* you have used by now? Go past it
   and the display turns red
-- **Overrun prediction** — which day you run out, and by how much
-- **Blackout windows** — mark the hours you cannot play: work, sleep,
+- ✅ **Overrun prediction** — which day you run out, and by how much
+- ✅ **Blackout windows** — mark the hours you cannot play: work, sleep,
   anything. Predictions then divide by *available* time rather than
   wall-clock time. A weekend holds more than twice the free time of a
   weekday, so wall-clock arithmetic flags a perfectly normal Saturday
   evening as overspending
-- **"How long can I play today"** — spreads the remaining quota across
+- ✅ **"How long can I play today"** — spreads the remaining quota across
   the available time left in the period
-- **Rollover waste warning** — how many hours you are on track to leave
+- ✅ **Rollover waste warning** — how many hours you are on track to leave
   unused, and how many of those will expire past the 15-hour cap
 
 ## How it works
