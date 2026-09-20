@@ -321,6 +321,42 @@ mod tests {
         TokenManager::new(store, reqwest::Client::new(), server.uri())
     }
 
+    /// 換碼的回應已經附了一顆能用的 id_token。收下它之後，第一次
+    /// `ensure_token()` 不該再打一次 `/token` —— 那等於白白多鑄一顆，
+    /// 而剛登入完正是最不該逼近「同時有效 access_token 上限」的時候。
+    ///
+    /// `expect(0)` 就是這個測試的主張：一次都不准打。
+    #[tokio::test]
+    async fn an_adopted_id_token_is_used_without_minting_another() {
+        let server = MockServer::start().await;
+        mount_token(&server, token_response("CT-NEVER"), 0).await;
+        let store = Arc::new(MemoryStore::new());
+        let manager = manager(store.clone(), &server);
+
+        manager
+            .replace_credentials_with_token(base_session(), Some(FAR_FUTURE_JWT))
+            .await
+            .unwrap();
+
+        assert_eq!(manager.ensure_token().await.unwrap(), FAR_FUTURE_JWT);
+        assert_eq!(
+            store.load_id_token().unwrap().as_deref(),
+            Some(FAR_FUTURE_JWT)
+        );
+    }
+
+    /// 沒帶 id_token 的匯入維持原樣：舊帳號那顆要丟掉，下次才會重新取得。
+    #[tokio::test]
+    async fn importing_without_an_id_token_drops_the_previous_one() {
+        let server = MockServer::start().await;
+        let store = store_with_id_token(FAR_FUTURE_JWT);
+        let manager = manager(store.clone(), &server);
+
+        manager.replace_credentials(base_session()).await.unwrap();
+
+        assert_eq!(store.load_id_token().unwrap(), None);
+    }
+
     /// 輪替不會重設 90 天的效期。實測依據：GFN 客戶端刷新過後，
     /// `clientTokenExpiry` 仍指向最初那次登入 + 90 天。
     ///
