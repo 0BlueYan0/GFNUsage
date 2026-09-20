@@ -15,6 +15,13 @@ pub enum GfnError {
     #[error("需要重新登入")]
     NeedsLogin,
 
+    /// 登入流程本身沒走完：連接埠被占用、使用者取消、逾時、回呼帶著 error。
+    ///
+    /// 與 `NeedsLogin` 分開：那個是既有憑證被伺服器拒絕（要重新登入），
+    /// 這個是新的登入沒成功（既有憑證，如果有的話，完全沒事）。
+    #[error("登入未完成：{0}")]
+    LoginFailed(String),
+
     /// NVIDIA 限制同時有效的 access_token 數量。撞到上限不是憑證失效，
     /// 重新登入也沒用 —— 只能等既有的 token 過期（最多 1 小時）。
     #[error("向 NVIDIA 索取的 token 太多了，等既有的過期後會自動恢復（最多 1 小時）")]
