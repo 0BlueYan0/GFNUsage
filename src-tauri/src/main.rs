@@ -1,24 +1,28 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gfnusage_lib::commands::{self, refresh_into_state};
 use gfnusage_lib::tray;
 use gfnusage_lib::AppState;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WebviewWindow};
+use tauri::{Manager, WebviewWindow, WindowEvent};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(300);
 
-fn toggle_panel(window: &WebviewWindow) {
-    if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
-    } else {
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+/// 自動收起後多久之內的系統匣點擊，視為「關閉」而不是「開啟」。
+///
+/// 點圖示會先讓面板失焦，失焦處理器把它收起來，接著點擊事件才送到 —
+/// 沒有這個寬限期，面板就會在同一次點擊中收起又立刻重開，變成關不掉。
+const REOPEN_GRACE: Duration = Duration::from_millis(300);
+
+const PANEL_LABEL: &str = "main";
+
+fn show_panel(window: &WebviewWindow) {
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 fn main() {
@@ -26,6 +30,20 @@ fn main() {
         .setup(|app| {
             let state = Arc::new(AppState::new());
             app.manage(state.clone());
+
+            // 標準 flyout 行為：點到別的地方就收起來。
+            if let Some(window) = app.get_webview_window(PANEL_LABEL) {
+                let handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if matches!(event, WindowEvent::Focused(false)) {
+                        if let Some(window) = handle.get_webview_window(PANEL_LABEL) {
+                            let _ = window.hide();
+                        }
+                        let state = handle.state::<Arc<AppState>>();
+                        *state.last_auto_hide.lock().unwrap() = Some(Instant::now());
+                    }
+                });
+            }
 
             let refresh_item = MenuItem::with_id(app, "refresh", "立即更新", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "結束", true, None::<&str>)?;
@@ -49,15 +67,32 @@ fn main() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        if let Some(window) = tray.app_handle().get_webview_window("main") {
-                            toggle_panel(&window);
+                    if !matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
                         }
+                    ) {
+                        return;
+                    }
+
+                    let app = tray.app_handle();
+                    let state = app.state::<Arc<AppState>>();
+
+                    // 這一下點擊剛剛才讓面板失焦收起，所以它是關閉動作。
+                    let just_closed = state
+                        .last_auto_hide
+                        .lock()
+                        .unwrap()
+                        .is_some_and(|at| at.elapsed() < REOPEN_GRACE);
+                    if just_closed {
+                        return;
+                    }
+
+                    if let Some(window) = app.get_webview_window(PANEL_LABEL) {
+                        show_panel(&window);
                     }
                 })
                 .build(app)?;
