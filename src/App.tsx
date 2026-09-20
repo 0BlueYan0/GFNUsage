@@ -186,6 +186,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   // 不是 null 就代表正在看設定畫面。開啟時才去讀設定，不必每次開面板都讀。
   const [schedule, setSchedule] = useState<Schedule | null>(null);
+  // 匯入之後用它強迫設定表單重新掛載，丟掉已經過期的草稿。
+  const [formKey, setFormKey] = useState(0);
 
   const load = useCallback(async () => {
     setData(await invoke<PanelData>("get_snapshot"));
@@ -249,6 +251,9 @@ export default function App() {
   if (schedule) {
     return (
       <ScheduleForm
+        // 匯入是在後端換掉設定，表單手上那份草稿隨即過期。換 key 讓它
+        // 整個重新掛載，`useState(value)` 才會吃到新的那一份。
+        key={formKey}
         value={schedule}
         busy={busy}
         onClose={() => setSchedule(null)}
@@ -257,6 +262,16 @@ export default function App() {
           run(async () => {
             await invoke("set_schedule", { schedule: next });
             setSchedule(null);
+          })
+        }
+        onExport={(next) =>
+          run(() => invoke("export_schedule", { schedule: next }))
+        }
+        onImport={() =>
+          run(async () => {
+            await invoke("import_schedule");
+            setSchedule(await invoke<Schedule>("get_schedule"));
+            setFormKey((key) => key + 1);
           })
         }
       />

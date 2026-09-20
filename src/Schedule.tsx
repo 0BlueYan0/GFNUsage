@@ -85,12 +85,16 @@ export default function ScheduleForm({
   value,
   busy,
   onSave,
+  onExport,
+  onImport,
   onClose,
 }: {
   value: Schedule;
   busy: boolean;
-  /// 回傳的 promise 被 reject 時，訊息會顯示在表單上。
+  /// 這三個回傳的 promise 被 reject 時，訊息會顯示在表單上。
   onSave: (schedule: Schedule) => Promise<void> | void;
+  onExport: (schedule: Schedule) => Promise<void> | void;
+  onImport: () => Promise<void> | void;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<Schedule>(value);
@@ -127,6 +131,24 @@ export default function ScheduleForm({
     setError(problem);
     if (problem) return;
     void Promise.resolve(onSave(draft)).catch((reason) =>
+      setError(messageOf(reason)),
+    );
+  };
+
+  // 匯出的是螢幕上這一份草稿，不是檔案裡那一份 —— 改到一半按匯出卻拿到
+  // 舊設定，沒有人猜得到為什麼。先驗一次，理由同 `save`。
+  const exportDraft = () => {
+    const problem = validate(draft);
+    setError(problem);
+    if (problem) return;
+    void Promise.resolve(onExport(draft)).catch((reason) =>
+      setError(messageOf(reason)),
+    );
+  };
+
+  const importFile = () => {
+    setError(null);
+    void Promise.resolve(onImport()).catch((reason) =>
       setError(messageOf(reason)),
     );
   };
@@ -343,6 +365,12 @@ export default function ScheduleForm({
       <div className="actions">
         <button className="primary" disabled={busy} onClick={save}>
           {busy ? "儲存中…" : "儲存"}
+        </button>
+        <button className="link" disabled={busy} onClick={exportDraft}>
+          匯出
+        </button>
+        <button className="link" disabled={busy} onClick={importFile}>
+          匯入
         </button>
       </div>
     </div>

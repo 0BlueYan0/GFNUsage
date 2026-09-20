@@ -20,14 +20,14 @@ const workdays: Schedule = {
 describe("ScheduleForm", () => {
   it("沒有任何時段時說明預設行為", () => {
     render(
-      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onClose={vi.fn()} />,
+      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     expect(screen.getByText(/還沒有設定/)).toBeTruthy();
   });
 
   it("列出既有的每週時段", () => {
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={vi.fn()} onClose={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     expect(screen.getByDisplayValue("09:00")).toBeTruthy();
     expect(screen.getByDisplayValue("18:00")).toBeTruthy();
@@ -36,7 +36,7 @@ describe("ScheduleForm", () => {
 
   it("新增時段會給一個可用的預設值", () => {
     render(
-      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onClose={vi.fn()} />,
+      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "新增每週時段" }));
     expect(screen.getByDisplayValue("00:00")).toBeTruthy();
@@ -45,7 +45,7 @@ describe("ScheduleForm", () => {
 
   it("刪掉時段就從清單消失", () => {
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={vi.fn()} onClose={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "刪除這個時段" }));
     expect(screen.queryByDisplayValue("上班")).toBeNull();
@@ -54,7 +54,7 @@ describe("ScheduleForm", () => {
   it("沒有選任何星期時擋下存檔", () => {
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={onSave} onClose={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     for (const day of ["一", "二", "三", "四", "五"]) {
       fireEvent.click(screen.getByRole("button", { name: `星期${day}` }));
@@ -67,7 +67,7 @@ describe("ScheduleForm", () => {
   it("儲存時把時間換算回分鐘數送出", () => {
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={onSave} onClose={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "儲存" }));
     expect(onSave).toHaveBeenCalledWith(workdays);
@@ -80,7 +80,7 @@ describe("ScheduleForm", () => {
     };
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={overnight} busy={false} onSave={onSave} onClose={vi.fn()} />,
+      <ScheduleForm value={overnight} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "儲存" }));
     expect(onSave).toHaveBeenCalledWith(overnight);
@@ -91,7 +91,7 @@ describe("ScheduleForm", () => {
   it("後端拒絕時把訊息顯示在表單上", async () => {
     const onSave = vi.fn().mockRejectedValue("寫入設定檔失敗：拒絕存取");
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={onSave} onClose={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "儲存" }));
     expect(await screen.findByText(/寫入設定檔失敗/)).toBeTruthy();
@@ -104,7 +104,7 @@ describe("ScheduleForm", () => {
       exceptions: [],
     };
     render(
-      <ScheduleForm value={allDay} busy={false} onSave={vi.fn()} onClose={vi.fn()} />,
+      <ScheduleForm value={allDay} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     expect(screen.getByRole("checkbox", { name: "整天" })).toBeTruthy();
     expect(screen.queryByLabelText("開始時間")).toBeNull();
@@ -113,7 +113,7 @@ describe("ScheduleForm", () => {
   it("勾起整天後存出 0 到 1440", () => {
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={empty} busy={false} onSave={onSave} onClose={vi.fn()} />,
+      <ScheduleForm value={empty} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "新增每週時段" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "整天" }));
@@ -136,7 +136,7 @@ describe("ScheduleForm", () => {
     };
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={blank} busy={false} onSave={onSave} onClose={vi.fn()} />,
+      <ScheduleForm value={blank} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "儲存" }));
     expect(screen.getByText(/日期還沒填完/)).toBeTruthy();
@@ -156,9 +156,64 @@ describe("ScheduleForm", () => {
       ],
     };
     render(
-      <ScheduleForm value={backwards} busy={false} onSave={vi.fn()} onClose={vi.fn()} />,
+      <ScheduleForm value={backwards} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "儲存" }));
     expect(screen.getByText(/結束日期早於開始日期/)).toBeTruthy();
+  });
+});
+
+describe("ScheduleForm 的匯出與匯入", () => {
+  it("匯出送出的是螢幕上這一份草稿", () => {
+    const onExport = vi.fn();
+    render(
+      <ScheduleForm
+        value={workdays}
+        busy={false}
+        onSave={vi.fn()}
+        onExport={onExport}
+        onImport={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "匯出" }));
+
+    expect(onExport).toHaveBeenCalledWith(workdays);
+  });
+
+  /// 匯出的錯誤不會寫進 last_error，吞掉就整個消失了。
+  it("匯出被拒絕時把訊息顯示在表單上", async () => {
+    render(
+      <ScheduleForm
+        value={workdays}
+        busy={false}
+        onSave={vi.fn()}
+        onExport={vi.fn().mockRejectedValue("寫入設定檔失敗：拒絕存取")}
+        onImport={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "匯出" }));
+
+    expect(await screen.findByText(/寫入設定檔失敗/)).toBeTruthy();
+  });
+
+  it("匯入被拒絕時把訊息顯示在表單上", async () => {
+    render(
+      <ScheduleForm
+        value={workdays}
+        busy={false}
+        onSave={vi.fn()}
+        onExport={vi.fn()}
+        onImport={vi.fn().mockRejectedValue("設定檔格式錯誤：expected value")}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "匯入" }));
+
+    expect(await screen.findByText(/設定檔格式錯誤/)).toBeTruthy();
   });
 });

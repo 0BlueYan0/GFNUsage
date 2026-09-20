@@ -4,6 +4,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Runtime, State};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::api::subscriptions::fetch_subscription;
@@ -83,6 +84,89 @@ pub fn set_schedule(
     recompute_pace(state, Utc::now());
     tray::sync(&app, state);
     Ok(())
+}
+
+/// 把面板上這一份設定另存成 JSON（spec §8）。
+///
+/// 收的是前端當下的草稿而不是檔案裡那一份：使用者改了幾行還沒按儲存就按
+/// 匯出，匯出的卻是舊的，沒有人猜得到為什麼。內容不合法時 `store::save`
+/// 會擋下來，訊息和按儲存時看到的一模一樣。
+///
+/// 錯誤走**回傳通道**（比照 `set_schedule`），不寫 `last_error` ——
+/// 這是使用者當下的操作，訊息該出現在按鈕旁邊，而不是變成黏在主面板上的
+/// 一行紅字。使用者取消存檔不是錯誤。
+#[tauri::command]
+pub async fn export_schedule(app: AppHandle, schedule: Schedule) -> Result<(), String> {
+    schedule.validate()?;
+
+    // 檔案視窗會擋住呼叫它的執行緒，不能擋在 async runtime 的工作執行緒上。
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("匯出不可遊玩時段")
+            .set_file_name(store::SCHEDULE_FILE)
+            .add_filter("JSON", &["json"])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| format!("開啟存檔視窗失敗：{e}"))?;
+
+    let Some(picked) = picked else {
+        return Ok(());
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("取得存檔路徑失敗：{e}"))?;
+    store::save(&path, &schedule)
+}
+
+/// 從 JSON 檔讀回設定（spec §8）。取消選檔不是錯誤。
+///
+/// 錯誤同樣走回傳通道。讀檔、解析、驗證都由 `store::load` 一手包辦，
+/// 訊息也已經是可以直接顯示的中文。
+#[tauri::command]
+pub async fn import_schedule(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let state = state.inner().clone();
+    let handle = app.clone();
+
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .dialog()
+            .file()
+            .set_title("匯入不可遊玩時段")
+            .add_filter("JSON", &["json"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| format!("開啟選檔視窗失敗：{e}"))?;
+
+    let Some(picked) = picked else {
+        return Ok(());
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("取得檔案路徑失敗：{e}"))?;
+
+    import_schedule_from(&state, &path)?;
+    // 設定一換，門檻與預測立刻不同 —— 系統匣不能等到下個週期才更新。
+    recompute_pace(&state, Utc::now());
+    tray::sync(&app, &state);
+    Ok(())
+}
+
+/// 讀一個設定檔並套用。不碰 `AppHandle`，可以直接測。
+pub fn import_schedule_from(state: &AppState, path: &std::path::Path) -> Result<(), String> {
+    // `store::load` 把「檔案不存在」當成「空設定」（全新安裝沒有設定不是
+    // 錯誤）。那個語意對匯入完全不適用：選了一個不存在的檔，結果會是把
+    // 使用者現有的設定無聲清光。
+    if !path.exists() {
+        return Err("選到的檔案不見了".to_string());
+    }
+    let schedule = store::load(path)?;
+    write_schedule(state, schedule)
 }
 
 /// 依目前快照與設定重算配速，結果寫回共用狀態。
@@ -608,6 +692,57 @@ mod tests {
             .starts_with(&format!("{}/authorize?", h.server.uri())));
         // verifier 與 nonce 各自獨立產生，不能是同一個值。
         assert_ne!(pending.verifier, pending.nonce);
+    }
+
+    fn workdays() -> Schedule {
+        Schedule {
+            weekly: vec![crate::pace::schedule::WeeklyWindow {
+                weekdays: vec![0, 1, 2, 3, 4],
+                start_minute: 540,
+                end_minute: 1080,
+                note: "上班".into(),
+            }],
+            exceptions: Vec::new(),
+        }
+    }
+
+    /// 匯出寫出去的檔案，匯入要讀得回同一份設定 ——
+    /// 這是「搬到另一台機器」的全部意義。
+    #[tokio::test]
+    async fn an_exported_schedule_can_be_imported_again() {
+        let h = harness(false).await;
+        let exported = h.state.settings_dir.join("exported.json");
+
+        store::save(&exported, &workdays()).unwrap();
+        import_schedule_from(&h.state, &exported).unwrap();
+
+        assert_eq!(read_schedule(&h.state), workdays());
+    }
+
+    /// 匯入壞掉的檔案時，現有設定必須原封不動 ——
+    /// 「匯入失敗」和「設定被清空」是兩件差很多的事。
+    #[tokio::test]
+    async fn a_broken_import_leaves_the_current_schedule_alone() {
+        let h = harness(false).await;
+        write_schedule(&h.state, workdays()).unwrap();
+        let broken = h.state.settings_dir.join("broken.json");
+        std::fs::write(&broken, "{ not json").unwrap();
+
+        assert!(import_schedule_from(&h.state, &broken).is_err());
+
+        assert_eq!(read_schedule(&h.state), workdays());
+    }
+
+    /// 使用者在檔案視窗開著時把檔案刪了。`store::load` 對「檔案不存在」
+    /// 的回應是「空設定」，直接沿用會把使用者的設定無聲清光。
+    #[tokio::test]
+    async fn importing_a_missing_file_is_an_error_not_an_empty_schedule() {
+        let h = harness(false).await;
+        write_schedule(&h.state, workdays()).unwrap();
+
+        assert!(import_schedule_from(&h.state, &h.state.settings_dir.join("gone.json")).is_err());
+
+        assert_eq!(read_schedule(&h.state), workdays());
     }
 
     fn last_error(state: &AppState) -> Option<String> {

@@ -21,6 +21,7 @@ const REOPEN_GRACE: Duration = Duration::from_millis(300);
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let settings_dir = app
@@ -126,6 +127,8 @@ fn main() {
             commands::refresh_if_due,
             commands::sign_out,
             commands::start_login,
+            commands::export_schedule,
+            commands::import_schedule,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
