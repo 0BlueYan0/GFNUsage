@@ -113,6 +113,49 @@ pub fn append_history(path: &Path, row: &SnapshotRow) -> Result<(), String> {
         .map_err(|e| format!("寫入快照歷史失敗：{e}"))
 }
 
+/// 面板的一次性 UI 狀態。
+///
+/// 和設定分開存，因為它**不該被匯出**：「提示看過了沒」是這台機器的事，
+/// 跟著作息設定搬到另一台機器只會讓那台機器的提示憑空消失。
+pub const UI_STATE_FILE: &str = "ui-state.json";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UiState {
+    /// 已經啟動過至少一次。用來決定要不要主動把面板叫出來。
+    pub first_run_done: bool,
+    /// 系統匣溢位區的提示已經被關掉了。
+    pub tray_hint_dismissed: bool,
+}
+
+pub fn ui_state_path(dir: &Path) -> PathBuf {
+    dir.join(UI_STATE_FILE)
+}
+
+/// 讀取 UI 狀態。檔案不存在、壞掉、讀不動，一律回預設值。
+///
+/// 和設定檔的處理刻意不同：設定讀壞了要講出來（少算一段不可遊玩時段會讓
+/// 預測悄悄失準），但這裡面只有兩個布林值，為它們在面板上擺一行錯誤訊息
+/// 完全不成比例 —— 最壞的後果是提示多出現一次。
+pub fn load_ui_state(path: &Path) -> UiState {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// 寫入 UI 狀態。
+///
+/// 不走設定檔那套「寫暫存檔再改名」：整份檔案就兩個布林值，寫壞了下次讀
+/// 不出來就回預設值，代價只是提示多出現一次。設定檔值得那道保險，這個不值得。
+pub fn save_ui_state(path: &Path, ui: &UiState) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("建立設定目錄失敗：{e}"))?;
+    }
+    let text = serde_json::to_string_pretty(ui).map_err(|e| format!("序列化失敗：{e}"))?;
+    fs::write(path, text).map_err(|e| format!("寫入 UI 狀態失敗：{e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -163,6 +206,41 @@ mod tests {
     }
 
     /// 設定目錄還不存在時（全新安裝的第一次抓取）也要寫得進去。
+    #[test]
+    fn ui_state_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ui_state_path(dir.path());
+        let ui = UiState {
+            first_run_done: true,
+            tray_hint_dismissed: true,
+        };
+
+        save_ui_state(&path, &ui).unwrap();
+
+        assert_eq!(load_ui_state(&path), ui);
+    }
+
+    /// 第一次啟動時檔案根本不存在。這不是錯誤，也不該在面板上留下訊息 ——
+    /// 這裡面沒有一個欄位值得為它擺一行紅字。
+    #[test]
+    fn a_missing_ui_state_is_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            load_ui_state(&ui_state_path(dir.path())),
+            UiState::default()
+        );
+    }
+
+    #[test]
+    fn a_broken_ui_state_falls_back_to_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ui_state_path(dir.path());
+        std::fs::write(&path, "{ not json").unwrap();
+
+        assert_eq!(load_ui_state(&path), UiState::default());
+    }
+
     #[test]
     fn history_creates_the_directory() {
         let dir = tempfile::tempdir().unwrap();

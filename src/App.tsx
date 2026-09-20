@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import "./App.css";
+import Banners from "./Banners";
 import { daysUntil, formatHours, formatResetAt, percentUsed } from "./format";
 import Pace from "./Pace";
 import ScheduleForm from "./Schedule";
@@ -113,6 +114,7 @@ function SignIn({
   busy,
   error,
   needsLogin,
+  banners,
   onLogin,
   onImportLocal,
   onImportManual,
@@ -120,6 +122,7 @@ function SignIn({
   busy: boolean;
   error: string | null;
   needsLogin: boolean;
+  banners: ReactNode;
   onLogin: () => void;
   onImportLocal: () => void;
   onImportManual: (data: string) => void;
@@ -134,6 +137,8 @@ function SignIn({
           {needsLogin ? "重新連結 NVIDIA 帳號" : "連結 NVIDIA 帳號"}
         </h1>
       </header>
+
+      {banners}
 
       {needsLogin && (
         <p className="note">
@@ -246,6 +251,17 @@ export default function App() {
     );
   }
 
+  // 橫幅在早期 return 之前組好：首次啟動時面板顯示的是登入畫面而不是
+  // 主畫面（那時必然還沒有憑證），提示只掛在主面板上等於白做。
+  const banners = (
+    <Banners
+      clientTokenExpiresAt={data.clientTokenExpiresAt}
+      showTrayHint={data.showTrayHint}
+      busy={busy}
+      onDismissHint={() => runQuietly(() => invoke("dismiss_tray_hint"))}
+    />
+  );
+
   // 設定畫面排在憑證判斷之前：時段設定與帳號無關，背景輪詢剛好把憑證
   // 判死時，不該把使用者正在填的一整排時段無聲清掉。
   if (schedule) {
@@ -284,6 +300,7 @@ export default function App() {
         busy={busy}
         error={data.lastError}
         needsLogin={data.needsLogin}
+        banners={banners}
         onLogin={() => runQuietly(() => invoke("start_login"))}
         onImportLocal={() => runQuietly(() => invoke("import_from_local_gfn"))}
         onImportManual={(value) =>
@@ -307,6 +324,8 @@ export default function App() {
           <span className={modifier("badge", data.state)}>{badge}</span>
         )}
       </header>
+
+      {banners}
 
       {snapshot ? (
         <Quota snapshot={snapshot} state={data.state} pace={data.pace} />

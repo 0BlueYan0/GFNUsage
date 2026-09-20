@@ -73,4 +73,8 @@ export interface PanelData {
   hasCredentials: boolean;
   /** 憑證被拒絕：後端已暫停輪詢，要重新匯入。 */
   needsLogin: boolean;
+  /** `client_token` 的到期時刻。里程碑 1／2 存下的舊憑證沒有，會是 null。 */
+  clientTokenExpiresAt: string | null;
+  /** 該不該顯示「把系統匣圖示拖出溢位區」的提示。只有 Windows 會是 true。 */
+  showTrayHint: boolean;
 }

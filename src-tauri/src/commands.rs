@@ -34,25 +34,54 @@ pub struct PanelData {
     pub has_credentials: bool,
     /// 憑證被拒絕。面板應回到匯入畫面；輪詢已暫停。
     pub needs_login: bool,
+    /// `client_token` 的到期時刻（spec §4.4）。里程碑 1／2 存下的舊憑證
+    /// 沒有這個值，會是 `None` —— 那時不顯示橫幅。
+    pub client_token_expires_at: Option<DateTime<Utc>>,
+    /// 該不該顯示「把系統匣圖示拖出溢位區」的提示（spec §7.1）。
+    pub show_tray_hint: bool,
 }
 
 #[tauri::command]
 pub fn get_snapshot(state: State<'_, Arc<AppState>>) -> PanelData {
+    panel_data(state.inner())
+}
+
+pub fn panel_data(state: &AppState) -> PanelData {
     let snapshot = state.snapshot.lock().unwrap().clone();
     let pace = state.pace.lock().unwrap().clone();
     let display = match snapshot.as_ref() {
         Some(snapshot) => pace::display_state(snapshot, pace.as_ref()),
         None => DisplayState::Normal,
     };
+    // 只讀一次金鑰儲存區：有沒有憑證、憑證什麼時候到期，是同一個問題的兩面。
+    let stored = state.store.load().ok().flatten();
 
     PanelData {
         snapshot,
         pace,
         state: display,
         last_error: state.display_error(),
-        has_credentials: state.store.load().ok().flatten().is_some(),
+        has_credentials: stored.is_some(),
+        client_token_expires_at: stored.and_then(|stored| stored.client_token_expires_at),
         needs_login: state.needs_login.load(Ordering::SeqCst),
+        // 溢位區是 Windows 才有的東西。在 Rust 這邊判平台，不要讓 JS 去猜
+        // —— 前端能拿到的只有 user agent，那是出了名的不可靠。
+        show_tray_hint: cfg!(target_os = "windows")
+            && !store::load_ui_state(&state.ui_state_path()).tray_hint_dismissed,
     }
+}
+
+/// 關掉系統匣溢位區的提示。錯誤走回傳通道。
+#[tauri::command]
+pub fn dismiss_tray_hint(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    dismiss_hint(state.inner())
+}
+
+pub fn dismiss_hint(state: &AppState) -> Result<(), String> {
+    let path = state.ui_state_path();
+    let mut ui = store::load_ui_state(&path);
+    ui.tray_hint_dismissed = true;
+    store::save_ui_state(&path, &ui)
 }
 
 /// 目前生效的設定。
@@ -692,6 +721,63 @@ mod tests {
             .starts_with(&format!("{}/authorize?", h.server.uri())));
         // verifier 與 nonce 各自獨立產生，不能是同一個值。
         assert_ne!(pending.verifier, pending.nonce);
+    }
+
+    /// 到期時刻要送到面板去，橫幅才有東西可以算。
+    #[tokio::test]
+    async fn the_panel_learns_when_the_credential_expires() {
+        let h = harness(false).await;
+        let expires_at = Utc::now() + chrono::Duration::days(3);
+        h.store
+            .save(&StoredSession {
+                client_token: "CT".into(),
+                sub: "SUB".into(),
+                client_token_expires_at: Some(expires_at),
+            })
+            .unwrap();
+
+        assert_eq!(
+            panel_data(&h.state).client_token_expires_at,
+            Some(expires_at)
+        );
+    }
+
+    /// 里程碑 1／2 存下的憑證沒有這個欄位。不知道就是不知道，
+    /// 不要編一個日期出來。
+    #[tokio::test]
+    async fn an_older_credential_reports_no_expiry() {
+        let h = harness(true).await;
+
+        assert_eq!(panel_data(&h.state).client_token_expires_at, None);
+    }
+
+    #[tokio::test]
+    async fn dismissing_the_tray_hint_sticks() {
+        let h = harness(false).await;
+        assert_eq!(panel_data(&h.state).show_tray_hint, cfg!(windows));
+
+        dismiss_hint(&h.state).unwrap();
+
+        assert!(!panel_data(&h.state).show_tray_hint);
+    }
+
+    /// 首次啟動的旗標與提示旗標各自獨立：關掉提示不該讓下次啟動又自己彈出來。
+    #[tokio::test]
+    async fn dismissing_the_hint_keeps_the_first_run_flag() {
+        let h = harness(false).await;
+        let path = h.state.ui_state_path();
+        store::save_ui_state(
+            &path,
+            &store::UiState {
+                first_run_done: true,
+                tray_hint_dismissed: false,
+            },
+        )
+        .unwrap();
+
+        dismiss_hint(&h.state).unwrap();
+
+        assert!(store::load_ui_state(&path).first_run_done);
     }
 
     fn workdays() -> Schedule {

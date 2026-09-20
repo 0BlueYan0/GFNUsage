@@ -353,3 +353,36 @@ textarea {
   background: var(--accent);
   color: #fff;
 }
+
+/* 提示與警告。用琥珀色而不是 `.alert` 的紅色：「還有 7 天」不是壞掉了，
+   紅色留給真的壞掉的事。 */
+.warn {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-sunken);
+  color: var(--state-low);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-sunken);
+}
+
+.hint p {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hint button {
+  align-self: center;
+}
