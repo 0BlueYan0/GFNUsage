@@ -160,6 +160,10 @@ impl TokenManager {
         self.store.save(&StoredSession {
             client_token: body.client_token,
             sub: stored.sub,
+            // 輪替不重設 90 天的效期（見 `StoredSession` 的註解）。這裡若改成
+            // `Utc::now() + 90 天`，到期橫幅就永遠不會出現，使用者會在毫無
+            // 預警的情況下被鎖在外面。
+            client_token_expires_at: stored.client_token_expires_at,
         })?;
 
         // id_token 只是重啟後的快取，寫不進去不能讓刷新失敗 —— 憑證已經輪替了，
@@ -216,6 +220,7 @@ mod tests {
         ImportedSession {
             client_token: "CT-OLD".into(),
             sub: "SUB456".into(),
+            client_token_expires_at: None,
         }
         .into()
     }
@@ -254,6 +259,33 @@ mod tests {
 
     fn manager(store: Arc<dyn TokenStore>, server: &MockServer) -> TokenManager {
         TokenManager::new(store, reqwest::Client::new(), server.uri())
+    }
+
+    /// 輪替不會重設 90 天的效期。實測依據：GFN 客戶端刷新過後，
+    /// `clientTokenExpiry` 仍指向最初那次登入 + 90 天。
+    ///
+    /// 這裡若改成「輪替時重新計時」，到期橫幅就永遠不會出現，
+    /// 使用者會在毫無預警的情況下被鎖在外面。
+    #[tokio::test]
+    async fn rotation_keeps_the_original_client_token_expiry() {
+        let server = MockServer::start().await;
+        mount_token(&server, token_response("CT-NEW"), 1).await;
+        let expires_at = Utc::now() + Duration::days(40);
+        let store = Arc::new(MemoryStore::new());
+        store
+            .save(&StoredSession {
+                client_token: "CT-OLD".into(),
+                sub: "SUB456".into(),
+                client_token_expires_at: Some(expires_at),
+            })
+            .unwrap();
+        let manager = manager(store.clone(), &server);
+
+        manager.ensure_token().await.unwrap();
+
+        let stored = store.load().unwrap().unwrap();
+        assert_eq!(stored.client_token, "CT-NEW");
+        assert_eq!(stored.client_token_expires_at, Some(expires_at));
     }
 
     /// 可以指定哪一種寫入會失敗的儲存區，用來驗證兩筆紀錄的失敗互不牽連。
@@ -596,6 +628,7 @@ mod tests {
             .replace_credentials(StoredSession {
                 client_token: "CT-IMPORTED".into(),
                 sub: "SUB-NEW".into(),
+                client_token_expires_at: None,
             })
             .await
             .unwrap();

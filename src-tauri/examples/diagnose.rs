@@ -118,6 +118,7 @@ async fn main() {
             Some(ImportedSession {
                 client_token: session.client_token,
                 sub: session.sub,
+                client_token_expires_at: session.client_token_expires_at,
             })
         }
         Ok(None) => {
@@ -185,6 +186,8 @@ async fn main() {
                         session: ImportedSession {
                             client_token: if same { session.client_token.clone() } else { new },
                             sub: session.sub.clone(),
+                            // 輪替不重設效期，沿用原本那個。
+                            client_token_expires_at: session.client_token_expires_at,
                         },
                         id_token: outcome.id_token,
                     },
@@ -239,6 +242,8 @@ async fn main() {
                                 session: ImportedSession {
                                     client_token: new,
                                     sub: old.sub.clone(),
+                                    // 輪替不重設效期，沿用原本那個。
+                                    client_token_expires_at: old.client_token_expires_at,
                                 },
                                 id_token: outcome.id_token,
                             };

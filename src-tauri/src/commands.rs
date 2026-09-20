@@ -320,6 +320,7 @@ mod tests {
                 .save(&StoredSession {
                     client_token: "CT-OLD".into(),
                     sub: "SUB456".into(),
+                    client_token_expires_at: None,
                 })
                 .unwrap();
         }

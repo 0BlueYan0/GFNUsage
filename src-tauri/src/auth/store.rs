@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::session::ImportedSession;
@@ -14,11 +15,27 @@ const ID_TOKEN_ACCOUNT: &str = "nvidia-id-token";
 /// 一顆 id_token 約 1150 字元，和憑證塞在同一筆會超過這個上限。
 pub const WINDOWS_CREDENTIAL_BLOB_LIMIT: usize = 2560;
 
+/// `client_token` 的效期。`/token` 的回應裡沒有這個值，但 GFN 客戶端在
+/// `sharedstorage.json` 存了 `clientTokenExpiryLength = 7776000000` 毫秒，
+/// 剛好 90 天。自行登入拿到的憑證就用這個長度推算到期時刻。
+pub const CLIENT_TOKEN_LIFETIME_DAYS: i64 = 90;
+
 /// 保存在金鑰儲存區裡的長效憑證。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredSession {
     pub client_token: String,
     pub sub: String,
+
+    /// `client_token` 的到期時刻。
+    ///
+    /// **輪替不會重設它。** 實測：GFN 客戶端在一小時前才刷新過，
+    /// `clientTokenExpiry` 仍指向 13.85 天前那次登入 + 90 天。
+    /// 效期錨定在最初的登入，不是最後一次輪替。
+    ///
+    /// 里程碑 1／2 存下的紀錄沒有這個欄位，會是 `None`。那時不顯示到期
+    /// 橫幅就好，不要拿 `Utc::now()` 回填 —— 那是假造一個晚了幾十天的日期。
+    #[serde(default)]
+    pub client_token_expires_at: Option<DateTime<Utc>>,
 }
 
 impl From<ImportedSession> for StoredSession {
@@ -26,6 +43,7 @@ impl From<ImportedSession> for StoredSession {
         Self {
             client_token: session.client_token,
             sub: session.sub,
+            client_token_expires_at: session.client_token_expires_at,
         }
     }
 }
@@ -168,6 +186,7 @@ mod tests {
         ImportedSession {
             client_token: "CT123".into(),
             sub: "SUB456".into(),
+            client_token_expires_at: None,
         }
         .into()
     }
@@ -233,6 +252,9 @@ mod tests {
 
     /// 前一版把 id_token 塞在同一筆紀錄裡；使用者的金鑰儲存區現在就是這個樣子，
     /// 升級後必須還讀得出來。
+    ///
+    /// 這個測試同時證明了反方向：新版多出來的 `client_token_expires_at`
+    /// 在舊紀錄裡不存在，反序列化要補成 `None` 而不是整筆讀不出來。
     #[test]
     fn ignores_the_id_token_fields_an_older_version_embedded() {
         let legacy = r#"{"client_token":"CT123","sub":"SUB456","id_token":null,"id_token_expires_at":null}"#;
@@ -244,9 +266,11 @@ mod tests {
     /// 把 id_token 和憑證塞在同一筆就是超過這個上限才炸的，所以兩筆各自都要塞得下。
     #[test]
     fn each_record_fits_the_windows_blob_limit() {
+        // 到期時刻有值時才是最長的情況，用 `None` 量等於量了個寂寞。
         let session = StoredSession {
             client_token: "c".repeat(86),
             sub: "s".repeat(43),
+            client_token_expires_at: Some(Utc::now()),
         };
         let record = serde_json::to_string(&session).unwrap();
         let utf16_bytes = |s: &str| s.encode_utf16().count() * 2;

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
 
 use crate::error::GfnError;
@@ -10,6 +11,9 @@ use crate::error::GfnError;
 pub struct ImportedSession {
     pub client_token: String,
     pub sub: String,
+    /// `client_token` 的到期時刻，取自 `clientTokenExpiry`。
+    /// 舊版客戶端或手改過的檔案可能沒有這個欄位。
+    pub client_token_expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Deserialize)]
@@ -27,6 +31,10 @@ struct StarfleetSession {
 struct SessionPayload {
     #[serde(rename = "clientToken")]
     client_token: String,
+    /// epoch 毫秒。GFN 客戶端自己算好並存起來的到期時刻 ——
+    /// `/token` 的回應裡沒有這個值，所以這是唯一撿得到現成答案的地方。
+    #[serde(rename = "clientTokenExpiry")]
+    client_token_expiry: Option<i64>,
     user: SessionUser,
 }
 
@@ -63,6 +71,9 @@ pub fn decode_session_data(data: &str) -> Result<ImportedSession, GfnError> {
     Ok(ImportedSession {
         client_token: payload.client_token,
         sub: payload.user.sub,
+        client_token_expires_at: payload
+            .client_token_expiry
+            .and_then(|ms| Utc.timestamp_millis_opt(ms).single()),
     })
 }
 
@@ -97,6 +108,39 @@ mod tests {
 
     /// base64( urlencode( {"clientToken":"CT123","user":{"sub":"SUB456"}} ) )
     const SAMPLE: &str = "JTdCJTIyY2xpZW50VG9rZW4lMjIlM0ElMjJDVDEyMyUyMiUyQyUyMnVzZXIlMjIlM0ElN0IlMjJzdWIlMjIlM0ElMjJTVUI0NTYlMjIlN0QlN0Q=";
+
+    /// 用同一條編碼鏈（JSON -> URL-encode -> base64）造測試資料。
+    /// 手工重算一長串 base64 每改一個欄位就得重來一遍，不划算。
+    fn encode(json: &str) -> String {
+        let escaped =
+            percent_encoding::utf8_percent_encode(json, percent_encoding::NON_ALPHANUMERIC)
+                .to_string();
+        STANDARD.encode(escaped)
+    }
+
+    /// GFN 客戶端自己算好了 client_token 的到期時刻，撿現成的就好。
+    #[test]
+    fn reads_the_client_token_expiry() {
+        let data = encode(
+            r#"{"clientToken":"CT123","clientTokenExpiry":1796462263706,"user":{"sub":"SUB456"}}"#,
+        );
+
+        let session = decode_session_data(&data).unwrap();
+
+        assert_eq!(
+            session.client_token_expires_at,
+            Some(Utc.timestamp_millis_opt(1796462263706).unwrap())
+        );
+    }
+
+    /// 舊版客戶端或手改過的檔案可能沒有這個欄位。沒有就是沒有，
+    /// 不要拿 `Utc::now()` 回填 —— 那等於假造一個晚了幾十天的到期日。
+    #[test]
+    fn tolerates_a_missing_client_token_expiry() {
+        let session = decode_session_data(SAMPLE).unwrap();
+
+        assert_eq!(session.client_token_expires_at, None);
+    }
 
     #[test]
     fn decodes_base64_then_urlencoded_json() {
