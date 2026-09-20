@@ -13,7 +13,7 @@ use crate::error::GfnError;
 use crate::pace::schedule::Schedule;
 use crate::pace::{self, PaceReport};
 use crate::quota::{DisplayState, QuotaSnapshot};
-use crate::store;
+use crate::store::{self, SnapshotRow};
 use crate::tray;
 use crate::AppState;
 
@@ -219,6 +219,33 @@ pub fn poll_due(state: &AppState) -> bool {
     !state.needs_login.load(Ordering::SeqCst)
 }
 
+/// 把這次抓到的快照記進歷史。剩餘時數與上一筆相同時跳過（spec §8），
+/// 否則閒置一整天就會多出 288 列一模一樣的資料。
+///
+/// 「上一筆」指的是這個行程記憶體裡的上一次，不是檔案的最後一行 ——
+/// 所以**重開程式後的第一筆一定會寫**，即使它和檔案最後一行重複。
+/// 為了省那一列而在每次啟動時去讀檔案尾巴，不值得。
+///
+/// 寫不進去不影響抓取本身：歷史是留給未來的趨勢圖用的，現在沒有人讀它，
+/// 為了它讓一次成功的抓取變成失敗完全不划算。只記到 stderr。
+fn record_history(state: &AppState, snapshot: &QuotaSnapshot) {
+    let unchanged = state
+        .snapshot
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|previous| previous.remaining_minutes == snapshot.remaining_minutes);
+    if unchanged {
+        return;
+    }
+
+    if let Err(message) =
+        store::append_history(&state.history_path(), &SnapshotRow::from_snapshot(snapshot))
+    {
+        eprintln!("{message}");
+    }
+}
+
 /// 把錯誤寫進狀態供面板顯示，並原樣回傳方便串接。
 fn record_error(state: &AppState, message: String) -> String {
     *state.last_error.lock().unwrap() = Some(message.clone());
@@ -259,6 +286,8 @@ async fn fetch_snapshot(state: &AppState) -> Result<QuotaSnapshot, GfnError> {
 pub async fn refresh_state(state: &AppState) -> Result<QuotaSnapshot, String> {
     match fetch_snapshot(state).await {
         Ok(snapshot) => {
+            // 要比對的「上一筆」就是還沒被覆寫掉的那一份，順序不能顛倒。
+            record_history(state, &snapshot);
             *state.snapshot.lock().unwrap() = Some(snapshot.clone());
             *state.last_error.lock().unwrap() = None;
             state.needs_login.store(false, Ordering::SeqCst);
@@ -381,6 +410,66 @@ mod tests {
             .mount(server)
             .await;
         mount_subscriptions(server, then).await;
+    }
+
+    /// 把 fixture 的 `remainingTimeInMinutes` 換成別的值。
+    fn subscriptions_with_remaining(remaining: u32) -> ResponseTemplate {
+        let mut body: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+        *body
+            .pointer_mut("/remainingTimeInMinutes")
+            .expect("fixture 應有 remainingTimeInMinutes") = remaining.into();
+        ResponseTemplate::new(200).set_body_json(body)
+    }
+
+    fn history_lines(state: &AppState) -> Vec<String> {
+        match std::fs::read_to_string(state.history_path()) {
+            Ok(text) => text.lines().map(str::to_string).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// 閒置時每 5 分鐘抓一次，剩餘時數不動。每次都寫的話一天就多出
+    /// 288 列一模一樣的資料。
+    #[tokio::test]
+    async fn an_unchanged_remaining_time_is_not_written_twice() {
+        let h = harness(true).await;
+        mount_token(&h.server, 1).await;
+        mount_subscriptions(&h.server, subscriptions_ok()).await;
+
+        refresh_state(&h.state).await.unwrap();
+        refresh_state(&h.state).await.unwrap();
+
+        assert_eq!(history_lines(&h.state).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_changed_remaining_time_appends_a_row() {
+        let h = harness(true).await;
+        mount_token(&h.server, 1).await;
+        mount_subscriptions_sequence(
+            &h.server,
+            subscriptions_ok(),
+            subscriptions_with_remaining(6000),
+        )
+        .await;
+
+        refresh_state(&h.state).await.unwrap();
+        refresh_state(&h.state).await.unwrap();
+
+        assert_eq!(history_lines(&h.state).len(), 2);
+    }
+
+    /// 抓取失敗不該留下任何一列 —— 歷史是「這一刻的事實」，
+    /// 沒抓到就是沒有事實。
+    #[tokio::test]
+    async fn a_failed_fetch_writes_no_history() {
+        let h = harness(true).await;
+        mount_token(&h.server, 1).await;
+        mount_subscriptions(&h.server, ResponseTemplate::new(500)).await;
+
+        assert!(refresh_state(&h.state).await.is_err());
+
+        assert!(history_lines(&h.state).is_empty());
     }
 
     fn last_error(state: &AppState) -> Option<String> {

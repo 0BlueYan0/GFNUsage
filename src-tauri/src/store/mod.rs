@@ -2,7 +2,11 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
 use crate::pace::schedule::Schedule;
+use crate::quota::QuotaSnapshot;
 
 /// 設定檔檔名。放在 app config 目錄，內容不含機密。
 pub const SCHEDULE_FILE: &str = "schedule.json";
@@ -47,10 +51,126 @@ pub fn save(path: &Path, schedule: &Schedule) -> Result<(), String> {
     fs::rename(&tmp, path).map_err(|e| format!("置換設定檔失敗：{e}"))
 }
 
+/// 快照歷史檔名。一行一筆 JSON（JSONL），只增不改。
+///
+/// 第一版不拿它做任何計算 —— 配速與預測只需要當下的快照 —— 但從第一版
+/// 就開始累積，否則之後要加趨勢圖或真實燃燒率時得從零開始等資料。
+pub const HISTORY_FILE: &str = "snapshots.json";
+
+pub fn history_path(dir: &Path) -> PathBuf {
+    dir.join(HISTORY_FILE)
+}
+
+/// 歷史的一列（spec §8）。
+///
+/// 不直接存 `QuotaSnapshot`：那個型別只有 `Serialize`，回頭讀不出來，
+/// 而且它帶著 `state` 這種由其他欄位推導出來的欄位 —— 把一個會變的判斷
+/// 凍進歷史檔，之後改了判斷規則就對不起來了。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotRow {
+    pub fetched_at: DateTime<Utc>,
+    pub remaining_minutes: u32,
+    pub total_minutes: u32,
+    /// 免費方案沒有「本期」，兩個都會是 null。
+    pub span_start: Option<DateTime<Utc>>,
+    pub span_end: Option<DateTime<Utc>>,
+}
+
+impl SnapshotRow {
+    pub fn from_snapshot(snapshot: &QuotaSnapshot) -> Self {
+        Self {
+            fetched_at: snapshot.fetched_at,
+            remaining_minutes: snapshot.remaining_minutes,
+            total_minutes: snapshot.total_minutes,
+            span_start: snapshot.span_start,
+            span_end: snapshot.span_end,
+        }
+    }
+}
+
+/// 附加一列到歷史檔。
+///
+/// 用 append 開檔，不走 `save()` 的「寫暫存檔再改名」：那是整檔置換，
+/// 等於每 5 分鐘把整份歷史讀出來再寫回去，檔案長大之後只會愈來愈慢。
+/// 而且 `save()` 的 `with_extension("json.tmp")` 會把 `snapshots.json`
+/// 變成 `snapshots.json.tmp`，跟設定檔的暫存檔撞名。
+pub fn append_history(path: &Path, row: &SnapshotRow) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("建立設定目錄失敗：{e}"))?;
+    }
+
+    let mut line = serde_json::to_string(row).map_err(|e| format!("快照序列化失敗：{e}"))?;
+    line.push('\n');
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("開啟快照歷史失敗：{e}"))?;
+    file.write_all(line.as_bytes())
+        .map_err(|e| format!("寫入快照歷史失敗：{e}"))
+}
+
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
     use super::*;
     use crate::pace::schedule::WeeklyWindow;
+
+    fn row(minute: u32, remaining: u32) -> SnapshotRow {
+        SnapshotRow {
+            fetched_at: Utc.with_ymd_and_hms(2026, 9, 20, 10, minute, 0).unwrap(),
+            remaining_minutes: remaining,
+            total_minutes: 6900,
+            span_start: Some(Utc.with_ymd_and_hms(2026, 9, 15, 13, 18, 59).unwrap()),
+            span_end: Some(Utc.with_ymd_and_hms(2026, 10, 15, 23, 59, 59).unwrap()),
+        }
+    }
+
+    #[test]
+    fn history_starts_a_file_and_then_appends_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = history_path(dir.path());
+
+        append_history(&path, &row(0, 6180)).unwrap();
+        append_history(&path, &row(5, 6120)).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let rows: Vec<SnapshotRow> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows, vec![row(0, 6180), row(5, 6120)]);
+    }
+
+    /// 免費方案沒有「本期」可言，兩個 span 都是 null。歷史要容得下。
+    #[test]
+    fn history_tolerates_rows_without_a_span() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = history_path(dir.path());
+        let mut free = row(0, 0);
+        free.span_start = None;
+        free.span_end = None;
+
+        append_history(&path, &free).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let back: SnapshotRow = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(back, free);
+    }
+
+    /// 設定目錄還不存在時（全新安裝的第一次抓取）也要寫得進去。
+    #[test]
+    fn history_creates_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = history_path(&dir.path().join("nested"));
+
+        append_history(&path, &row(0, 6180)).unwrap();
+
+        assert!(path.exists());
+    }
 
     fn sample() -> Schedule {
         Schedule {

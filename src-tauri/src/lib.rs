@@ -118,6 +118,10 @@ impl AppState {
         crate::store::schedule_path(&self.settings_dir)
     }
 
+    pub fn history_path(&self) -> PathBuf {
+        crate::store::history_path(&self.settings_dir)
+    }
+
     /// 面板與系統匣要顯示的錯誤。
     ///
     /// 憑證失效與抓取失敗都比設定檔急：蓋掉它們會讓 tooltip 與登入畫面變成
