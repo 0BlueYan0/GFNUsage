@@ -5,12 +5,18 @@ system tray or the macOS menu bar.
 
 [繁體中文說明](README.zh-TW.md)
 
-> **Status:** milestone 2 is done. On top of the tray display, GFNUsage
-> now works out whether you are ahead of pace, when the quota runs out,
-> how long you can play today, and how many rollover hours you are on
-> track to waste — all measured against the hours you can actually play,
-> which you set up in the panel. OAuth login and settings export land in
-> milestone 3.
+> **Status:** milestone 3 is done, which completes the v1 feature set on
+> Windows. GFNUsage signs in with your NVIDIA account over a localhost
+> loopback — or imports credentials from a machine that already has the
+> GeForce NOW client — refreshes them on its own, and shows the remaining
+> hours in the tray alongside a pace threshold, an overrun projection and
+> the blackout windows you set up in the panel. Settings export and
+> import, a snapshot history and a warning before the credential expires
+> landed here too.
+>
+> **macOS is untested.** The sign-in flow exists precisely so a Mac can
+> get credentials without the GFN client, but the development machine is
+> a Windows box and nobody has run it on a Mac yet.
 
 ## Why
 
@@ -36,6 +42,13 @@ burning through it too fast.
   the available time left in the period
 - ✅ **Rollover waste warning** — how many hours you are on track to leave
   unused, and how many of those will expire past the 15-hour cap
+- ✅ **Sign in with your NVIDIA account** — a localhost loopback OAuth
+  flow, so a machine without the GeForce NOW client can get credentials
+  on its own
+- ✅ **Settings export and import** — move one set of blackout windows
+  between machines as a JSON file
+- ✅ **Credential expiry warning** — the refresh token lasts 90 days;
+  the panel says so a week before it runs out
 
 ## How it works
 
