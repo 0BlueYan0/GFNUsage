@@ -13,6 +13,8 @@ export interface QuotaSnapshot {
   remainingMinutes: number;
   usedMinutes: number;
   rolledOverMinutes: number;
+  /** 結轉上限，官方政策的 15 小時。不在 API 回應裡，由後端帶下來。 */
+  rolloverCapMinutes: number;
   purchasedMinutes: number;
   /** 沒有時數上限的方案沒有「本期」可言，會是 null。 */
   spanStart: string | null;
@@ -64,6 +66,9 @@ export interface Schedule {
   exceptions: ScheduleException[];
 }
 
+/** 面板主要數字看哪一邊。進度條跟著它走。 */
+export type Metric = "remaining" | "used";
+
 export interface PanelData {
   snapshot: QuotaSnapshot | null;
   pace: PaceReport | null;
@@ -84,4 +89,5 @@ export interface PanelData {
    * 本地旗標撐不過那一下。
    */
   loginPending: boolean;
+  metric: Metric;
 }

@@ -1,6 +1,14 @@
-/** 分鐘轉為「103.0」這樣的小時數字串，不含單位。 */
-export function formatHours(minutes: number): string {
-  return (minutes / 60).toFixed(1);
+/**
+ * 拆成小時與分鐘，給要分別排版的地方（面板的主要數字）。
+ *
+ * 不滿一小時時 `hours` 是 0，由呼叫端決定要不要把分鐘當主角。
+ */
+export function splitDuration(minutes: number): {
+  hours: number;
+  mins: number;
+} {
+  const total = Math.max(0, Math.round(minutes));
+  return { hours: Math.floor(total / 60), mins: total % 60 };
 }
 
 /**
@@ -49,21 +57,25 @@ export function formatCountdown(iso: string, now: Date = new Date()): string {
   return `${minutes} 分鐘`;
 }
 
-/** 已使用的百分比，四捨五入到整數。 */
-export function percentUsed(used: number, total: number): number {
+/**
+ * 佔總量的百分比，四捨五入到整數。
+ *
+ * 不叫 percentUsed：進度條現在可能畫的是剩餘，名字寫死成「已使用」會騙人。
+ */
+export function percentOf(part: number, total: number): number {
   if (total <= 0) return 0;
-  return Math.round((used / total) * 100);
+  return Math.round((part / total) * 100);
 }
 
 /**
- * 給人看的時間長度：不足一小時只講分鐘，否則講到小數一位的小時。
- *
- * 「今天還能玩 0.4 小時」不如「今天還能玩 24 分鐘」好懂。
+ * 給人看的時間長度。不用小數點的小時 ——「2.5 小時」要讀的人自己在心裡
+ * 乘六十，有餘數就直接把它講成分鐘。
  */
 export function formatDuration(minutes: number): string {
-  const rounded = Math.max(0, Math.round(minutes));
-  if (rounded < 60) return `${rounded} 分鐘`;
-  return `${(rounded / 60).toFixed(1)} 小時`;
+  const { hours, mins } = splitDuration(minutes);
+  if (hours === 0) return `${mins} 分鐘`;
+  if (mins === 0) return `${hours} 小時`;
+  return `${hours} 小時 ${mins} 分鐘`;
 }
 
 /** 配速差距的說法。超前用「超前」，落後用「低於」。 */

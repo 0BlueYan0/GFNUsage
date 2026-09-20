@@ -3,22 +3,24 @@ import {
   daysUntil,
   formatCountdown,
   formatDuration,
-  formatHours,
   formatOverPace,
   formatResetAt,
-  percentUsed,
+  percentOf,
+  splitDuration,
 } from "./format";
 
-describe("formatHours", () => {
-  it("轉換分鐘為一位小數的小時", () => {
-    expect(formatHours(6180)).toBe("103.0");
-    expect(formatHours(6900)).toBe("115.0");
-    expect(formatHours(720)).toBe("12.0");
-    expect(formatHours(0)).toBe("0.0");
+describe("splitDuration", () => {
+  it("拆成小時與分鐘", () => {
+    expect(splitDuration(6185)).toEqual({ hours: 103, mins: 5 });
+    expect(splitDuration(6180)).toEqual({ hours: 103, mins: 0 });
   });
 
-  it("保留小數，不讓 90 分鐘看起來像 1 小時", () => {
-    expect(formatHours(90)).toBe("1.5");
+  it("不滿一小時時小時是 0", () => {
+    expect(splitDuration(45)).toEqual({ hours: 0, mins: 45 });
+  });
+
+  it("負數當成零", () => {
+    expect(splitDuration(-5)).toEqual({ hours: 0, mins: 0 });
   });
 });
 
@@ -47,15 +49,15 @@ describe("daysUntil", () => {
   });
 });
 
-describe("percentUsed", () => {
+describe("percentOf", () => {
   it("算出四捨五入的整數百分比", () => {
-    expect(percentUsed(720, 6900)).toBe(10);
-    expect(percentUsed(0, 6900)).toBe(0);
-    expect(percentUsed(6900, 6900)).toBe(100);
+    expect(percentOf(720, 6900)).toBe(10);
+    expect(percentOf(0, 6900)).toBe(0);
+    expect(percentOf(6900, 6900)).toBe(100);
   });
 
   it("總量為零時不除以零", () => {
-    expect(percentUsed(10, 0)).toBe(0);
+    expect(percentOf(10, 0)).toBe(0);
   });
 });
 
@@ -65,9 +67,14 @@ describe("formatDuration", () => {
     expect(formatDuration(59.4)).toBe("59 分鐘");
   });
 
-  it("超過一小時講小時", () => {
-    expect(formatDuration(90)).toBe("1.5 小時");
-    expect(formatDuration(6180)).toBe("103.0 小時");
+  it("有餘數就把餘數講成分鐘，不用小數點", () => {
+    expect(formatDuration(90)).toBe("1 小時 30 分鐘");
+    expect(formatDuration(6185)).toBe("103 小時 5 分鐘");
+  });
+
+  it("整點不畫蛇添足加 0 分鐘", () => {
+    expect(formatDuration(120)).toBe("2 小時");
+    expect(formatDuration(6180)).toBe("103 小時");
   });
 
   it("負數當成零", () => {
@@ -77,11 +84,11 @@ describe("formatDuration", () => {
 
 describe("formatOverPace", () => {
   it("超前時直說超前多少", () => {
-    expect(formatOverPace(1000)).toBe("超前 16.7 小時");
+    expect(formatOverPace(1000)).toBe("超前 16 小時 40 分鐘");
   });
 
   it("落後時是好消息，說低於門檻", () => {
-    expect(formatOverPace(-500)).toBe("低於門檻 8.3 小時");
+    expect(formatOverPace(-500)).toBe("低於門檻 8 小時 20 分鐘");
   });
 });
 

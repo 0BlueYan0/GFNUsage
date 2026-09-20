@@ -7,12 +7,19 @@ export default function Banners({
   clientTokenExpiresAt,
   showTrayHint,
   busy,
+  loggingIn,
   onDismissHint,
+  onLogin,
+  onCancelLogin,
 }: {
   clientTokenExpiresAt: string | null;
   showTrayHint: boolean;
   busy: boolean;
+  loggingIn?: boolean;
   onDismissHint: () => void;
+  /// 給了才畫重新登入鈕。登入畫面不給。
+  onLogin?: () => void;
+  onCancelLogin?: () => void;
 }) {
   // 不知道到期時刻就別講。里程碑 1／2 存下的憑證會是 null，硬要顯示
   // 只會變成「憑證今天到期」這種既嚇人又不準的話。
@@ -28,8 +35,7 @@ export default function Banners({
       {showTrayHint && (
         <div className="hint">
           <p>
-            Windows 11 預設把新圖示收進系統匣的溢位區。點工作列的{" "}
-            <code>^</code> 把 GFNUsage 拖出來釘住，剩餘時數就一眼看得到。
+            點工作列的 <code>^</code>，把 GFNUsage 拖出來釘住。
           </p>
           <button className="link" disabled={busy} onClick={onDismissHint}>
             知道了
@@ -38,11 +44,28 @@ export default function Banners({
       )}
 
       {expiring && clientTokenExpiresAt && (
-        <p className="warn">
-          {expired
-            ? "憑證已過期，要重新登入。"
-            : `憑證再 ${formatCountdown(clientTokenExpiresAt)}到期，到期後要重新登入。現在登入一次就會再延 90 天。`}
-        </p>
+        <div className="warn">
+          <p>
+            {expired
+              ? "登入已過期"
+              : `登入 ${formatCountdown(clientTokenExpiresAt)}後到期`}
+          </p>
+          {/* 主面板上唯一能重新登入的地方。那裡的「登出」意思相反，不能兼差。
+              登入畫面不給這顆：那個畫面底下就有登入鈕。 */}
+          {loggingIn
+            ? // 取消不看 `busy`：登入卡住時這是唯一的出口，理由同登入畫面。
+              // 登入途中這裡不留重新登入鈕，再按一次只會多綁一個埠。
+              onCancelLogin && (
+                <button className="link" onClick={onCancelLogin}>
+                  取消登入
+                </button>
+              )
+            : onLogin && (
+                <button className="link" disabled={busy} onClick={onLogin}>
+                  重新登入
+                </button>
+              )}
+        </div>
       )}
     </>
   );

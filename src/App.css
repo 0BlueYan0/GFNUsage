@@ -234,6 +234,15 @@ button.link {
   color: var(--fg-muted);
 }
 
+/* 取代原本那句「或者，從已安裝的 GeForce NOW 匯入…」。
+   登入與匯入是兩條路，用一條線分開就看得出來。 */
+.rule {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
 textarea {
   width: 100%;
   padding: 8px;
@@ -345,6 +354,32 @@ textarea {
   min-width: 0;
 }
 
+/* 設定畫面的一行選擇。左邊是名稱，右邊是兩顆並排的選項。 */
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.setting__choice {
+  display: flex;
+  gap: 4px;
+}
+
+.setting__choice .chip {
+  flex: 0 0 auto;
+  padding: 4px 14px;
+}
+
+.section {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .chip {
   flex: 1;
   padding: 4px 0;
@@ -364,6 +399,10 @@ textarea {
 /* 提示與警告。用琥珀色而不是 `.alert` 的紅色：「還有 7 天」不是壞掉了，
    紅色留給真的壞掉的事。 */
 .warn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin: 0;
   padding: 8px 10px;
   border-radius: 6px;
@@ -371,6 +410,10 @@ textarea {
   color: var(--state-low);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.warn p {
+  margin: 0;
 }
 
 .hint {

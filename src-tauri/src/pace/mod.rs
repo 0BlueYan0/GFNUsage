@@ -5,13 +5,9 @@ use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
 use serde::Serialize;
 
-use crate::quota::{DisplayState, QuotaSnapshot};
+use crate::quota::{DisplayState, QuotaSnapshot, ROLLOVER_CAP_MINUTES};
 use avail::{advance, avail, local_midnight};
 use schedule::Schedule;
-
-/// NVIDIA 官方規定：未用完時數最多結轉 15 小時，無例外。
-/// 此值不在 API 回應中，故於此定義。
-pub const ROLLOVER_CAP_MINUTES: u32 = 900;
 
 /// 累積可遊玩時間未達此值前不顯示預測，避免樣本過少導致的失真外推。
 pub const MIN_AVAIL_FOR_PROJECTION_MINUTES: u32 = 720;
@@ -80,12 +76,14 @@ fn end_of_local_day(now: DateTime<Utc>, tz: Tz) -> DateTime<Utc> {
 /// 由快照與設定算出配速與預測（spec §6）。
 ///
 /// `now` 與 `tz` 都是參數：這個模組不碰系統時鐘，測試才能固定時點。
+/// `used_today`（今天已經用掉的分鐘數）同理 —— 讀歷史檔是呼叫端的事。
 /// 免費方案（沒有本期）或本期已結束時回傳 `None` —— 沒有配速可言。
 pub fn compute(
     snapshot: &QuotaSnapshot,
     schedule: &Schedule,
     now: DateTime<Utc>,
     tz: Tz,
+    used_today: Option<u32>,
 ) -> Option<PaceReport> {
     if !snapshot.time_capped {
         return None;
@@ -131,11 +129,32 @@ pub fn compute(
     }
 
     // 今日額度只用到 R 與 A_left，不做任何外推，所以不受樣本下限限制 ——
-    // 本期第一天就是有效的（spec §6.5）。`sustainable_rate` 可能大於 1
+    // 本期第一天就是有效的（spec §6.5）。`sustainable` 可能大於 1
     // （額度多到用不完），所以要用今天實際能玩的時間與剩餘額度封頂。
-    let today_avail = avail(now, end_of_local_day(now, tz).min(span_end), schedule, tz) as f64;
+    //
+    // 與 spec §6.4 的公式不同，這是刻意的。那條把份額算在「現在到今天結束」
+    // 上，於是同一天從早看到晚，沒玩也會愈看愈少：早上沒用掉的份額直接蒸發。
+    // 這裡份額算一整天的，再扣掉今天已經用掉的，數字只因為你玩而變少。
+    let day_end = end_of_local_day(now, tz).min(span_end);
+    let rest_of_today = avail(now, day_end, schedule, tz) as f64;
     let sustainable = remaining / left as f64;
-    report.today_budget_minutes = Some((sustainable * today_avail).min(today_avail).min(remaining));
+
+    // 答不出今天用了多少（沒有歷史、機器午夜前後關著）就當成沒玩。
+    // 不為此改用另一套算法：那會讓同一個欄位在不同日子有兩種行為，而多給
+    // 的那點份額本來就不是上限，超前與超支由旁邊兩列如實報告。
+    let used_today = used_today.unwrap_or(0) as f64;
+    let day_start = local_midnight(now.with_timezone(&tz).date_naive(), tz)
+        .unwrap_or(now)
+        .max(span_start);
+    let whole_day = avail(day_start, day_end, schedule, tz) as f64;
+
+    report.today_budget_minutes = Some(
+        (sustainable * whole_day - used_today)
+            .max(0.0)
+            // 份額比今天剩下的還多時以剩下的為準 —— 過了午夜就是明天的份額了。
+            .min(rest_of_today)
+            .min(remaining),
+    );
 
     if past == 0 {
         report.note = Some(PaceNote::Insufficient);
@@ -213,6 +232,7 @@ mod tests {
             &Schedule::default(),
             now(),
             UTC,
+            None,
         )
         .expect("時數方案且本期未結束，應該算得出配速")
     }
@@ -300,7 +320,7 @@ mod tests {
     fn projections_wait_until_twelve_hours_of_playable_time_have_passed() {
         let snap = snapshot(6000, 5900);
         let early = at("2026-09-01T06:00:00Z");
-        let r = compute(&snap, &Schedule::default(), early, UTC).unwrap();
+        let r = compute(&snap, &Schedule::default(), early, UTC, None).unwrap();
         assert_eq!(r.note, Some(PaceNote::Collecting));
         assert_eq!(r.projected_used_minutes, None);
         assert_eq!(r.wasted_minutes, None);
@@ -316,7 +336,7 @@ mod tests {
     #[test]
     fn no_playable_time_yet_means_no_pace_at_all() {
         let snap = snapshot(6000, 6000);
-        let r = compute(&snap, &Schedule::default(), at("2026-09-01T00:00:00Z"), UTC).unwrap();
+        let r = compute(&snap, &Schedule::default(), at("2026-09-01T00:00:00Z"), UTC, None).unwrap();
         assert_eq!(r.note, Some(PaceNote::Insufficient));
         assert_eq!(r.over_pace_minutes, None);
         assert_eq!(r.burn_rate, None);
@@ -334,7 +354,7 @@ mod tests {
                 note: String::new(),
             }],
         };
-        let r = compute(&snapshot(6000, 4500), &blocked, now(), UTC).unwrap();
+        let r = compute(&snapshot(6000, 4500), &blocked, now(), UTC, None).unwrap();
         assert_eq!(r.avail_left_minutes, 0);
         assert_eq!(r.note, Some(PaceNote::NoTimeLeft));
         assert_eq!(r.today_budget_minutes, None);
@@ -347,14 +367,84 @@ mod tests {
         let mut sub: Subscription = serde_json::from_str(FIXTURE).unwrap();
         sub.sub_type = "FREE".into();
         let snap = QuotaSnapshot::from_subscription(&sub, now());
-        assert!(compute(&snap, &Schedule::default(), now(), UTC).is_none());
+        assert!(compute(&snap, &Schedule::default(), now(), UTC, None).is_none());
     }
 
     /// spec §6.5：本期已經結束的資料不做任何推算，等下一次抓取。
     #[test]
     fn an_expired_span_has_no_pace() {
         let snap = snapshot(6000, 4500);
-        assert!(compute(&snap, &Schedule::default(), at("2026-10-02T00:00:00Z"), UTC).is_none());
+        assert!(compute(&snap, &Schedule::default(), at("2026-10-02T00:00:00Z"), UTC, None).is_none());
+    }
+
+    /// 每天 00:00–08:00 睡覺，可遊玩時間一天 960 分鐘。
+    fn sleeping() -> Schedule {
+        Schedule {
+            weekly: vec![crate::pace::schedule::WeeklyWindow {
+                weekdays: vec![0, 1, 2, 3, 4, 5, 6],
+                start_minute: 0,
+                end_minute: 480,
+                note: String::new(),
+            }],
+            exceptions: Vec::new(),
+        }
+    }
+
+    fn budget(at_time: &str, used_today: Option<u32>) -> f64 {
+        compute(
+            &snapshot(6000, 4500),
+            &sleeping(),
+            at(at_time),
+            UTC,
+            used_today,
+        )
+        .unwrap()
+        .today_budget_minutes
+        .unwrap()
+    }
+
+    /// 這是整個改動的重點。同一天從早看到晚、中間一分鐘都沒玩，今日額度
+    /// 不該掉下來 —— 份額算的是一整天，不是「現在到今天結束」。
+    #[test]
+    fn todays_budget_holds_through_the_day_when_nothing_was_played() {
+        let morning = budget("2026-09-11T09:00:00Z", Some(0));
+        let evening = budget("2026-09-11T20:00:00Z", Some(0));
+
+        assert!(
+            (evening - morning).abs() < 15.0,
+            "早上 {morning:.0} 分鐘，晚上 {evening:.0} 分鐘"
+        );
+    }
+
+    /// 答不出今天用了多少就當成沒玩，不換一套算法。同一個欄位在不同日子
+    /// 有兩種行為，比多給一點份額更難理解。
+    #[test]
+    fn an_unknown_usage_counts_as_none_played() {
+        for at_time in ["2026-09-11T09:00:00Z", "2026-09-11T20:00:00Z"] {
+            assert_eq!(budget(at_time, None), budget(at_time, Some(0)), "{at_time}");
+        }
+    }
+
+    /// 份額比今天剩下的可遊玩時間還多時，以剩下的為準。
+    #[test]
+    fn todays_budget_never_exceeds_what_is_left_of_today() {
+        let late = budget("2026-09-11T22:00:00Z", Some(0));
+        assert!((late - 120.0).abs() < 0.001, "{late}");
+    }
+
+    /// 數字該因為你玩而變少，而且是一比一。
+    #[test]
+    fn playing_eats_into_todays_budget() {
+        let untouched = budget("2026-09-11T20:00:00Z", Some(0));
+        let after_two_hours = budget("2026-09-11T20:00:00Z", Some(120));
+
+        assert!((untouched - after_two_hours - 120.0).abs() < 0.001);
+    }
+
+    /// 玩超過份額就是零，不是負數。
+    #[test]
+    fn overspending_todays_budget_floors_at_zero() {
+        assert_eq!(budget("2026-09-11T20:00:00Z", Some(9999)), 0.0);
     }
 
     /// 不可遊玩時段會改變分母：睡覺 7 小時後，同樣的用量就不算超前了。
@@ -369,7 +459,7 @@ mod tests {
             }],
             exceptions: Vec::new(),
         };
-        let with_sleep = compute(&snapshot(6000, 4500), &sleep, now(), UTC).unwrap();
+        let with_sleep = compute(&snapshot(6000, 4500), &sleep, now(), UTC, None).unwrap();
         let without = report(6000, 4500);
         assert!(with_sleep.avail_past_minutes < without.avail_past_minutes);
         assert!(with_sleep.avail_left_minutes < without.avail_left_minutes);
@@ -389,7 +479,7 @@ mod tests {
         sub.current_span_start_date_time = Some(at("2026-09-01T00:00:00Z"));
         sub.current_span_end_date_time = Some(at("2026-10-01T00:00:00Z"));
         let snap = QuotaSnapshot::from_subscription(&sub, now());
-        let r = compute(&snap, &Schedule::default(), now(), UTC).unwrap();
+        let r = compute(&snap, &Schedule::default(), now(), UTC, None).unwrap();
         assert_eq!(display_state(&snap, Some(&r)), DisplayState::Low);
     }
 

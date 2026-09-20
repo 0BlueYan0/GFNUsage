@@ -2,14 +2,14 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum GfnError {
-    #[error("憑證格式無效：{0}")]
+    #[error("登入資料格式無效：{0}")]
     InvalidCredential(String),
 
     #[error("找不到 GeForce NOW 客戶端資料：{0}")]
     SharedStorageNotFound(String),
 
     /// 金鑰儲存區裡沒有憑證。這不是錯誤狀態，只是還沒匯入。
-    #[error("尚未連結 NVIDIA 帳號")]
+    #[error("尚未登入")]
     NotLinked,
 
     #[error("需要重新登入")]

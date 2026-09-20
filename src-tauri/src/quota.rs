@@ -18,6 +18,13 @@ pub enum DisplayState {
     FreeTier,
 }
 
+/// NVIDIA 官方規定：未用完時數最多結轉 15 小時，無例外。
+///
+/// 此值不在 API 回應中。放在這裡而不是 `pace`：它是額度政策，面板要顯示
+/// 它、`pace` 要拿它算浪費，而 `pace` 本來就相依於 `quota`，反過來不成立。
+/// spec §12 要求它只有一份。
+pub const ROLLOVER_CAP_MINUTES: u32 = 900;
+
 /// 傳給前端與系統匣的顯示模型。所有時間單位為分鐘。
 ///
 /// 本期起訖可能缺席：沒有時數上限的方案沒有「本期」可言。
@@ -31,6 +38,8 @@ pub struct QuotaSnapshot {
     pub remaining_minutes: u32,
     pub used_minutes: u32,
     pub rolled_over_minutes: u32,
+    /// 結轉上限。常數，跟著快照下去是為了讓面板不必自己再寫一份。
+    pub rollover_cap_minutes: u32,
     pub purchased_minutes: u32,
     pub span_start: Option<DateTime<Utc>>,
     pub span_end: Option<DateTime<Utc>>,
@@ -64,6 +73,7 @@ impl QuotaSnapshot {
             remaining_minutes: remaining,
             used_minutes: sub.total_time_in_minutes.saturating_sub(remaining),
             rolled_over_minutes: sub.rolled_over_time_in_minutes,
+            rollover_cap_minutes: ROLLOVER_CAP_MINUTES,
             purchased_minutes: sub.purchased_time_in_minutes,
             span_start: sub.current_span_start_date_time,
             span_end: sub.current_span_end_date_time,
@@ -79,6 +89,16 @@ impl QuotaSnapshot {
             return "\u{2013}".to_string();
         }
         (self.remaining_minutes / 60).to_string()
+    }
+}
+
+/// 給人看的長度。不用小數點的小時 ——「2.5 小時」要讀的人自己在心裡乘六十，
+/// 有餘數就直接講成分鐘。前端的 `formatDuration` 是同一條規則。
+pub fn human_duration(minutes: u32) -> String {
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m} 分鐘"),
+        (h, 0) => format!("{h} 小時"),
+        (h, m) => format!("{h} 小時 {m} 分鐘"),
     }
 }
 
@@ -148,6 +168,24 @@ mod tests {
         assert_eq!(snap.state, DisplayState::FreeTier);
         assert!(snap.span_end.is_none());
         assert_eq!(snap.tray_label(), "–");
+    }
+
+    /// spec §12：上限只有一份。面板要顯示它，所以跟著快照下去，
+    /// 而不是讓前端再寫一個 900。
+    #[test]
+    fn the_snapshot_carries_the_rollover_cap() {
+        let snap = QuotaSnapshot::from_subscription(&fixture(), at(1789817022));
+        assert_eq!(snap.rollover_cap_minutes, ROLLOVER_CAP_MINUTES);
+        // fixture 剛好撞到上限，面板上會是「15 小時 / 15 小時」。
+        assert_eq!(snap.rolled_over_minutes, 900);
+    }
+
+    #[test]
+    fn human_duration_drops_the_decimal_point() {
+        assert_eq!(human_duration(150), "2 小時 30 分鐘");
+        assert_eq!(human_duration(120), "2 小時");
+        assert_eq!(human_duration(45), "45 分鐘");
+        assert_eq!(human_duration(0), "0 分鐘");
     }
 
     #[test]

@@ -2,9 +2,9 @@ import { formatDuration, formatOverPace, formatResetAt } from "./format";
 import type { PaceNote, PaceReport } from "./types";
 
 const NOTE_TEXT: Record<PaceNote, string> = {
-  collecting: "資料累積中，可遊玩時間滿 12 小時後才做預測",
-  insufficient: "資料不足，本期還沒有可遊玩時間",
-  noTimeLeft: "本期已無可遊玩時間",
+  collecting: "資料累積中",
+  insufficient: "還沒有可遊玩時間",
+  noTimeLeft: "沒有可遊玩時間了",
 };
 
 /**
@@ -59,20 +59,16 @@ export default function Pace({
             {overshoot > 0
               ? `超支 ${formatDuration(overshoot)}`
               : `會剩 ${formatDuration(totalMinutes - projected)}`}
-            {pace.runsOutAt ? (
+            {/* 不補「不會用完」那一句。前一句的「會剩 X」已經回答了。
+                spec §6.5 的 r = 0 那一列要求補，那條比「會剩 X」早寫。 */}
+            {pace.runsOutAt && (
               <span className="pace__runs-out">
                 {formatResetAt(pace.runsOutAt)} 用完
               </span>
-            ) : (
-              // spec §6.5：還沒玩（r = 0）或額度撐得過本期，要把話講白。
-              // 「會剩 X」講的是量，沒回答「會不會用完」。
-              overshoot <= 0 && (
-                <span className="pace__runs-out">以目前速度不會用完</span>
-              )
             )}
             {wasted !== null && wasted > 0 && (
               <span className="pace__waste">
-                其中約 {formatDuration(wasted)} 超過 15 小時結轉上限，會作廢
+                {formatDuration(wasted)} 會浪費掉
               </span>
             )}
           </span>

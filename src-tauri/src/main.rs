@@ -171,6 +171,7 @@ fn main() {
             commands::export_schedule,
             commands::import_schedule,
             commands::dismiss_tray_hint,
+            commands::set_metric,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -3,11 +3,18 @@ import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 import Banners from "./Banners";
 import SignIn from "./SignIn";
-import { formatCountdown, formatHours, formatResetAt, percentUsed } from "./format";
+import {
+  formatCountdown,
+  formatDuration,
+  formatResetAt,
+  percentOf,
+  splitDuration,
+} from "./format";
 import Pace from "./Pace";
 import ScheduleForm from "./Schedule";
 import type {
   DisplayState,
+  Metric,
   PaceReport,
   PanelData,
   QuotaSnapshot,
@@ -33,49 +40,54 @@ function Quota({
   snapshot,
   state,
   pace,
+  metric,
 }: {
   snapshot: QuotaSnapshot;
   state: DisplayState;
   pace: PaceReport | null;
+  metric: Metric;
 }) {
   if (!snapshot.timeCapped) {
-    return <p className="note">此方案沒有每月時數上限，不需要盯著用量。</p>;
+    return <p className="note">沒有月時數上限</p>;
   }
 
-  const used = percentUsed(snapshot.usedMinutes, snapshot.totalMinutes);
+  // 大字與進度條看同一個數字。各看各的話，數字往下掉而長條往上長。
+  const value =
+    metric === "used" ? snapshot.usedMinutes : snapshot.remainingMinutes;
+  const percent = percentOf(value, snapshot.totalMinutes);
+  // 主要數字只放小時，餘數的分鐘跟在小字那一行。「103 小時 5 分鐘」整串
+  // 用 44px 排，360px 寬的面板放不下。
+  const shown = splitDuration(value);
 
   return (
     <>
       <div className="hero">
         <span className={modifier("hero__value", state)}>
-          {formatHours(snapshot.remainingMinutes)}
+          {shown.hours > 0 ? shown.hours : shown.mins}
         </span>
         <span className="hero__unit">
-          / {formatHours(snapshot.totalMinutes)} 小時
+          {shown.hours > 0 ? "小時" : "分鐘"}
+          {shown.hours > 0 && shown.mins > 0 && ` ${shown.mins} 分`}
+          {" / "}
+          {formatDuration(snapshot.totalMinutes)}
         </span>
       </div>
 
       <div
         className="meter"
         role="progressbar"
-        aria-valuenow={used}
+        aria-valuenow={percent}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label="已使用的月配額"
+        aria-label={metric === "used" ? "已使用的月配額" : "剩餘的月配額"}
       >
         <div
           className={modifier("meter__fill", state)}
-          style={{ width: `${used}%` }}
+          style={{ width: `${percent}%` }}
         />
       </div>
 
       <dl className="facts">
-        <div className="facts__row">
-          <dt>已使用</dt>
-          <dd>
-            {formatHours(snapshot.usedMinutes)} 小時（{used}%）
-          </dd>
-        </div>
         {snapshot.spanEnd && (
           <div className="facts__row">
             <dt>重置</dt>
@@ -89,14 +101,18 @@ function Quota({
         )}
         {snapshot.rolledOverMinutes > 0 && (
           <div className="facts__row">
-            <dt>本期含結轉</dt>
-            <dd>{formatHours(snapshot.rolledOverMinutes)} 小時</dd>
+            <dt>上期未用完</dt>
+            {/* 帶上限：15 / 15 看得出撞到天花板了，8 / 15 看得出還有空間。 */}
+            <dd>
+              {formatDuration(snapshot.rolledOverMinutes)} /{" "}
+              {formatDuration(snapshot.rolloverCapMinutes)}
+            </dd>
           </div>
         )}
         {snapshot.purchasedMinutes > 0 && (
           <div className="facts__row">
-            <dt>本期含加購</dt>
-            <dd>{formatHours(snapshot.purchasedMinutes)} 小時</dd>
+            <dt>加購</dt>
+            <dd>{formatDuration(snapshot.purchasedMinutes)}</dd>
           </div>
         )}
       </dl>
@@ -154,8 +170,8 @@ export default function App() {
   /**
    * 跑一個會動到後端狀態的動作：期間鎖住按鈕，結束後一律重新載入面板資料。
    *
-   * 失敗往外丟，由呼叫端決定怎麼講。設定的儲存需要這個 —— 它的錯誤
-   * 不會寫進 `last_error`，吞掉就等於整個消失。
+   * 失敗往外丟，由呼叫端決定怎麼講。設定的匯出與匯入需要這個 —— 它們的
+   * 錯誤不會寫進 `last_error`，吞掉就等於整個消失。
    */
   const run = async (task: () => Promise<unknown>) => {
     setBusy(true);
@@ -167,7 +183,7 @@ export default function App() {
     }
   };
 
-  // 匯入、解除連結、立即更新失敗時，後端都會把錯誤寫進 state，
+  // 匯入、登出、立即更新失敗時，後端都會把錯誤寫進 state，
   // `run()` 的 load() 會取回來顯示，所以這裡吞掉就好。
   const runQuietly = (task: () => Promise<unknown>) => {
     void run(task).catch(() => {});
@@ -203,12 +219,20 @@ export default function App() {
 
   // 橫幅在早期 return 之前組好：首次啟動時面板顯示的是登入畫面而不是
   // 主畫面（那時必然還沒有憑證），提示只掛在主面板上等於白做。
-  const banners = (
+  //
+  // 參數決定到期橫幅要不要附一顆重新登入鈕。登入畫面底下本來就有登入鈕，
+  // 再附一顆是同一個動作出現兩次。
+  const banners = (withLogin: boolean) => (
     <Banners
       clientTokenExpiresAt={data.clientTokenExpiresAt}
       showTrayHint={data.showTrayHint}
       busy={busy}
+      loggingIn={starting || data.loginPending}
       onDismissHint={() => runQuietly(() => invoke("dismiss_tray_hint"))}
+      onLogin={withLogin ? login : undefined}
+      onCancelLogin={
+        withLogin ? () => void invoke("cancel_login_command") : undefined
+      }
     />
   );
 
@@ -223,13 +247,15 @@ export default function App() {
         value={schedule}
         busy={busy}
         onClose={() => setSchedule(null)}
-        onSave={(next) =>
-          // 這裡不吞錯誤：reject 會被表單接住，顯示在儲存鍵上方。
-          run(async () => {
-            await invoke("set_schedule", { schedule: next });
-            setSchedule(null);
-          })
-        }
+        metric={data.metric}
+        onMetric={(next) => run(() => invoke("set_metric", { metric: next }))}
+        // 自動儲存，所以不走 `run()`：它會把按鈕鎖起來，打字時一路閃。
+        // 也不關掉表單 —— 存檔不再是離開的動作了。
+        // 不吞錯誤：reject 會被表單接住，顯示在匯出入鍵上方。
+        onSave={async (next) => {
+          await invoke("set_schedule", { schedule: next });
+          await load();
+        }}
         onExport={(next) =>
           run(() => invoke("export_schedule", { schedule: next }))
         }
@@ -251,7 +277,7 @@ export default function App() {
         loggingIn={starting || data.loginPending}
         error={data.lastError}
         needsLogin={data.needsLogin}
-        banners={banners}
+        banners={banners(false)}
         onLogin={login}
         onCancelLogin={() => void invoke("cancel_login_command")}
         onImportLocal={() => runQuietly(() => invoke("import_from_local_gfn"))}
@@ -277,12 +303,17 @@ export default function App() {
         )}
       </header>
 
-      {banners}
+      {banners(true)}
 
       {snapshot ? (
-        <Quota snapshot={snapshot} state={data.state} pace={data.pace} />
+        <Quota
+          snapshot={snapshot}
+          state={data.state}
+          pace={data.pace}
+          metric={data.metric}
+        />
       ) : (
-        <p className="note">還沒有資料，按下方的「立即更新」試試。</p>
+        <p className="note">沒有資料</p>
       )}
 
       {data.lastError && <p className="alert">{data.lastError}</p>}
@@ -310,8 +341,8 @@ export default function App() {
           className="link"
           disabled={busy}
           onClick={() =>
-            // 讀不到設定就不開表單。拿一份空設定進去會讓使用者一按儲存
-            // 就把原本的設定清空。
+            // 讀不到設定就不開表單。拿一份空設定進去，使用者一動它就
+            // 自動存了出去，原本的設定當場清空。
             void invoke<Schedule>("get_schedule")
               .then(setSchedule)
               .catch(() => {})
@@ -324,7 +355,7 @@ export default function App() {
           disabled={busy}
           onClick={() => runQuietly(() => invoke("sign_out"))}
         >
-          解除連結
+          登出
         </button>
       </div>
     </div>

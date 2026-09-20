@@ -1,8 +1,8 @@
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::pace::schedule::Schedule;
@@ -113,11 +113,81 @@ pub fn append_history(path: &Path, row: &SnapshotRow) -> Result<(), String> {
         .map_err(|e| format!("寫入快照歷史失敗：{e}"))
 }
 
+/// 找到的那一列離目標時刻超過這麼久，就不拿它當「今天開始時的剩餘量」。
+///
+/// 代價講明白：這段空白裡玩掉的時間會被算成今天的。程式每 5 分鐘寫一列，
+/// 正常運作時誤差是幾分鐘。設成一小時，是願意把昨晚最後一小時的遊玩算進
+/// 今天，換取「機器在午夜前後短暫關掉」這種常見情況仍然算得出答案。
+pub const MAX_HISTORY_GAP: Duration = Duration::hours(1);
+
+/// 只讀檔尾這麼多位元組。一列約 160 bytes、每 5 分鐘一列，一天約 288 列
+/// 也就是 46 KB，256 KB 涵蓋五天多。要找的只是今天午夜前那一列，再往前的
+/// `MAX_HISTORY_GAP` 本來就會擋掉。
+///
+/// 不整份讀進來：歷史只增不減，跑滿一年是 17 MB，而這個函式每一輪都會叫。
+const TAIL_BYTES: u64 = 256 * 1024;
+
+/// 歷史裡不晚於 `at` 的最後一列的剩餘量。
+///
+/// 只看 `span_start` 相同的列。本期重置後剩餘量會跳回滿，拿上一期的數字
+/// 去減，算出來的「今天用了多少」會是負的。
+///
+/// 回傳 `None` 代表答不出來：沒有歷史、檔案讀不動、或最近的一列離 `at`
+/// 太遠。呼叫端要有退路，不能把它當成零 —— 那會把沒觀測到的遊玩當成沒玩。
+pub fn remaining_at(
+    path: &Path,
+    at: DateTime<Utc>,
+    span_start: Option<DateTime<Utc>>,
+) -> Option<u32> {
+    let mut file = fs::File::open(path).ok()?;
+    let from = file.metadata().ok()?.len().saturating_sub(TAIL_BYTES);
+    file.seek(SeekFrom::Start(from)).ok()?;
+
+    let mut reader = BufReader::new(file);
+    if from > 0 {
+        // 從中間切進去，第一行多半是半行。丟掉。
+        let mut partial = String::new();
+        reader.read_line(&mut partial).ok()?;
+    }
+
+    let mut best: Option<SnapshotRow> = None;
+    for line in reader.lines() {
+        // 讀到一半壞掉就收在這裡，用已經找到的那一列。再往下讀也讀不出
+        // 更好的答案。
+        let Ok(line) = line else { break };
+        let Ok(row) = serde_json::from_str::<SnapshotRow>(&line) else {
+            continue;
+        };
+        // 檔案是時間順序的，後面只會更晚。
+        if row.fetched_at > at {
+            break;
+        }
+        if row.span_start == span_start {
+            best = Some(row);
+        }
+    }
+
+    let best = best?;
+    (at - best.fetched_at <= MAX_HISTORY_GAP).then_some(best.remaining_minutes)
+}
+
 /// 面板的一次性 UI 狀態。
 ///
 /// 和設定分開存，因為它**不該被匯出**：「提示看過了沒」是這台機器的事，
 /// 跟著作息設定搬到另一台機器只會讓那台機器的提示憑空消失。
 pub const UI_STATE_FILE: &str = "ui-state.json";
+
+/// 面板的主要數字看哪一邊。進度條跟著它走 —— 兩邊各看各的話，數字往下掉
+/// 而長條往上長。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Metric {
+    /// 還剩多少。預設，這個工具存在的理由就是盯著它。
+    #[default]
+    Remaining,
+    /// 已經用掉多少。
+    Used,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -126,6 +196,9 @@ pub struct UiState {
     pub first_run_done: bool,
     /// 系統匣溢位區的提示已經被關掉了。
     pub tray_hint_dismissed: bool,
+    /// 主要數字顯示剩餘還是已使用。放這裡不放 `schedule.json`：它是這台
+    /// 機器上的看法，不該跟著不可遊玩時段一起匯出到別台。
+    pub metric: Metric,
 }
 
 pub fn ui_state_path(dir: &Path) -> PathBuf {
@@ -173,6 +246,67 @@ mod tests {
         }
     }
 
+    fn span() -> Option<DateTime<Utc>> {
+        Some(Utc.with_ymd_and_hms(2026, 9, 15, 13, 18, 59).unwrap())
+    }
+
+    fn cutoff(minute: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 9, 20, 10, minute, 0).unwrap()
+    }
+
+    #[test]
+    fn remaining_at_takes_the_last_row_before_the_cutoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = history_path(dir.path());
+        append_history(&path, &row(0, 6300)).unwrap();
+        append_history(&path, &row(30, 6240)).unwrap();
+        // 截止之後的這一列不算，它是「今天」的遊玩。
+        append_history(&path, &row(45, 6180)).unwrap();
+
+        assert_eq!(remaining_at(&path, cutoff(40), span()), Some(6240));
+    }
+
+    /// 機器關掉太久，午夜前後那段沒有人觀測。寧可答不出來。
+    #[test]
+    fn remaining_at_gives_up_when_the_last_row_is_too_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = history_path(dir.path());
+        append_history(&path, &row(0, 6300)).unwrap();
+
+        let two_hours_later = Utc.with_ymd_and_hms(2026, 9, 20, 12, 0, 0).unwrap();
+        assert_eq!(remaining_at(&path, two_hours_later, span()), None);
+    }
+
+    /// 本期重置後剩餘量跳回滿。拿上一期的列去減會得到負的用量。
+    #[test]
+    fn remaining_at_ignores_rows_from_another_period() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = history_path(dir.path());
+        let mut previous = row(0, 120);
+        previous.span_start = Some(Utc.with_ymd_and_hms(2026, 8, 15, 13, 18, 59).unwrap());
+        append_history(&path, &previous).unwrap();
+        append_history(&path, &row(30, 6240)).unwrap();
+
+        assert_eq!(remaining_at(&path, cutoff(40), span()), Some(6240));
+    }
+
+    #[test]
+    fn remaining_at_with_only_another_period_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = history_path(dir.path());
+        let mut previous = row(0, 120);
+        previous.span_start = Some(Utc.with_ymd_and_hms(2026, 8, 15, 13, 18, 59).unwrap());
+        append_history(&path, &previous).unwrap();
+
+        assert_eq!(remaining_at(&path, cutoff(40), span()), None);
+    }
+
+    #[test]
+    fn remaining_at_without_a_history_file_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(remaining_at(&history_path(dir.path()), cutoff(40), span()), None);
+    }
+
     #[test]
     fn history_starts_a_file_and_then_appends_to_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -213,6 +347,7 @@ mod tests {
         let ui = UiState {
             first_run_done: true,
             tray_hint_dismissed: true,
+            metric: Metric::Used,
         };
 
         save_ui_state(&path, &ui).unwrap();

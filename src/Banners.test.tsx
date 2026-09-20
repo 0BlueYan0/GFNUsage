@@ -10,7 +10,7 @@ const inDays = (days: number) =>
   new Date(Date.now() + days * DAY + 90 * 60_000).toISOString();
 
 describe("Banners", () => {
-  it("憑證剩不到七天時提醒重新登入", () => {
+  it("登入剩不到七天到期時提醒", () => {
     render(
       <Banners
         clientTokenExpiresAt={inDays(3)}
@@ -20,10 +20,10 @@ describe("Banners", () => {
       />,
     );
 
-    expect(screen.getByText(/再 3 天 1 小時到期/)).toBeTruthy();
+    expect(screen.getByText(/3 天 1 小時後到期/)).toBeTruthy();
   });
 
-  it("憑證還很久時什麼都不說", () => {
+  it("還很久時什麼都不說", () => {
     render(
       <Banners
         clientTokenExpiresAt={inDays(30)}
@@ -93,7 +93,61 @@ describe("Banners", () => {
       />,
     );
 
-    expect(screen.getByText(/再 5 小時到期/)).toBeTruthy();
+    expect(screen.getByText(/5 小時後到期/)).toBeTruthy();
+  });
+
+  /// 主面板上唯一能重新登入的地方。那裡的「登出」做的是相反的事。
+  it("到期橫幅上的重新登入會呼叫 onLogin", () => {
+    const onLogin = vi.fn();
+    render(
+      <Banners
+        clientTokenExpiresAt={inDays(3)}
+        showTrayHint={false}
+        busy={false}
+        onDismissHint={vi.fn()}
+        onLogin={onLogin}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "重新登入" }));
+
+    expect(onLogin).toHaveBeenCalled();
+  });
+
+  /// 登入畫面用的是同一個元件，但那裡底下就有登入鈕。
+  it("沒給 onLogin 就不畫重新登入", () => {
+    render(
+      <Banners
+        clientTokenExpiresAt={inDays(3)}
+        showTrayHint={false}
+        busy={false}
+        onDismissHint={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "重新登入" })).toBeNull();
+  });
+
+  /// 登入途中留著重新登入鈕，再按一次只會多綁一個埠、多開一個分頁。
+  /// 換成取消，順便給使用者一條出口。
+  it("登入途中換成取消登入", () => {
+    const onCancelLogin = vi.fn();
+    render(
+      <Banners
+        clientTokenExpiresAt={inDays(3)}
+        showTrayHint={false}
+        busy={false}
+        onDismissHint={vi.fn()}
+        onLogin={vi.fn()}
+        onCancelLogin={onCancelLogin}
+        loggingIn
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "重新登入" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "取消登入" }));
+
+    expect(onCancelLogin).toHaveBeenCalled();
   });
 
   it("已經過期就直說過期，不講剩幾分鐘", () => {
@@ -107,6 +161,6 @@ describe("Banners", () => {
       />,
     );
 
-    expect(screen.getByText(/憑證已過期/)).toBeTruthy();
+    expect(screen.getByText(/登入已過期/)).toBeTruthy();
   });
 });

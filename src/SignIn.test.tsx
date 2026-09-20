@@ -19,9 +19,7 @@ describe("SignIn", () => {
     render(<SignIn {...props} />);
 
     expect(screen.queryByRole("button", { name: "取消登入" })).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "登入 NVIDIA 帳號" }),
-    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "登入" })).toBeTruthy();
   });
 
   /// 這是整條修正的重點：使用者關掉瀏覽器分頁之後，得有辦法退出來，
@@ -56,7 +54,7 @@ describe("SignIn", () => {
     expect((login as HTMLButtonElement).disabled).toBe(true);
   });
 
-  /// `busy` 是別的動作（匯入、解除連結）在跑。那時全部鎖住是對的，
+  /// `busy` 是別的動作（匯入、登出）在跑。那時全部鎖住是對的，
   /// 但不該冒出一個取消登入的按鈕 —— 根本沒有登入在跑。
   it("其他動作進行中時全部鎖住，也沒有取消鈕", () => {
     render(<SignIn {...props} busy />);

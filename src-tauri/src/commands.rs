@@ -42,6 +42,8 @@ pub struct PanelData {
     /// 有一次 OAuth 登入正在進行。開瀏覽器會把面板收起來，面板回來時
     /// 要靠這個才知道「還在等」，而不是又給一顆可以按的登入鈕。
     pub login_pending: bool,
+    /// 主要數字與進度條看哪一邊。
+    pub metric: store::Metric,
 }
 
 #[tauri::command]
@@ -58,6 +60,7 @@ pub fn panel_data(state: &AppState) -> PanelData {
     };
     // 只讀一次金鑰儲存區：有沒有憑證、憑證什麼時候到期，是同一個問題的兩面。
     let stored = state.store.load().ok().flatten();
+    let ui = store::load_ui_state(&state.ui_state_path());
 
     PanelData {
         snapshot,
@@ -69,9 +72,9 @@ pub fn panel_data(state: &AppState) -> PanelData {
         needs_login: state.needs_login.load(Ordering::SeqCst),
         // 溢位區是 Windows 才有的東西。在 Rust 這邊判平台，不要讓 JS 去猜
         // —— 前端能拿到的只有 user agent，那是出了名的不可靠。
-        show_tray_hint: cfg!(target_os = "windows")
-            && !store::load_ui_state(&state.ui_state_path()).tray_hint_dismissed,
+        show_tray_hint: cfg!(target_os = "windows") && !ui.tray_hint_dismissed,
         login_pending: state.login_pending.load(Ordering::SeqCst),
+        metric: ui.metric,
     }
 }
 
@@ -85,6 +88,23 @@ pub fn dismiss_hint(state: &AppState) -> Result<(), String> {
     let path = state.ui_state_path();
     let mut ui = store::load_ui_state(&path);
     ui.tray_hint_dismissed = true;
+    store::save_ui_state(&path, &ui)
+}
+
+/// 切換主要數字。立刻寫檔，不走設定表單那套「按儲存才生效」——
+/// 它只有兩個值，看得到結果就知道選了什麼。
+#[tauri::command]
+pub fn set_metric(
+    state: State<'_, Arc<AppState>>,
+    metric: store::Metric,
+) -> Result<(), String> {
+    write_metric(state.inner(), metric)
+}
+
+pub fn write_metric(state: &AppState, metric: store::Metric) -> Result<(), String> {
+    let path = state.ui_state_path();
+    let mut ui = store::load_ui_state(&path);
+    ui.metric = metric;
     store::save_ui_state(&path, &ui)
 }
 
@@ -221,9 +241,21 @@ pub fn recompute_pace(state: &AppState, now: DateTime<Utc>) {
     }
     let schedule = read_schedule(state);
     let snapshot = state.snapshot.lock().unwrap().clone();
+    let tz = pace::machine_tz();
+
+    // 今天用了多少，從歷史回推：今日本地午夜那一刻的剩餘量，減掉現在的。
+    // 任何一步答不出來就整個是 None，由 `pace::compute` 退回舊算法 ——
+    // 把沒觀測到的那段當成「沒玩」，會給出一個偏大的今日額度。
+    let used_today = snapshot.as_ref().and_then(|snapshot| {
+        let midnight = pace::avail::local_midnight(now.with_timezone(&tz).date_naive(), tz)?;
+        let at_midnight =
+            store::remaining_at(&state.history_path(), midnight, snapshot.span_start)?;
+        Some(at_midnight.saturating_sub(snapshot.remaining_minutes))
+    });
+
     let report = snapshot
         .as_ref()
-        .and_then(|snapshot| pace::compute(snapshot, &schedule, now, pace::machine_tz()));
+        .and_then(|snapshot| pace::compute(snapshot, &schedule, now, tz, used_today));
     *state.pace.lock().unwrap() = report;
 }
 
@@ -506,6 +538,13 @@ pub async fn link_account(state: &AppState, session: ImportedSession) -> Result<
 }
 
 pub async fn unlink_account(state: &AppState) -> Result<(), String> {
+    // 登出途中還有一次登入在跑的話，五分鐘後回來的那次會把剛清掉的憑證
+    // 重新寫回去，使用者登出了卻還是登入狀態。理由同 `link_account`。
+    //
+    // 主面板的到期橫幅有重新登入鈕之後這條路才走得到：在那之前，
+    // 有登入鈕的畫面上沒有登出鈕。
+    cancel_login(state);
+
     state
         .tokens
         .clear_credentials()
@@ -1016,6 +1055,41 @@ mod tests {
         assert_eq!(h.store.load().unwrap().unwrap().client_token, "CT123");
     }
 
+    /// 到期橫幅按了重新登入，再按登出。不收掉那次登入的話，五分鐘後
+    /// 它會把剛清掉的憑證寫回去。
+    #[tokio::test]
+    async fn signing_out_while_a_login_is_pending_cancels_it() {
+        let _ports = crate::loopback_ports().await;
+        let h = harness(true).await;
+        let pending = begin_login(&h.state).await.unwrap();
+        let state = h.state.clone();
+        let finishing = tokio::spawn(async move { finish_login(&state, pending).await });
+
+        unlink_account(&h.state).await.unwrap();
+
+        // 斷言訊息，不是只斷言 is_err()。逾時也會給 Err（「登入未完成：
+        // 等了 5 分鐘…」），只看 is_err() 的話，把 `cancel_login` 拿掉
+        // 測試照樣會過，只是先卡滿五分鐘。
+        assert_eq!(finishing.await.unwrap(), Err("登入已取消".to_string()));
+        assert!(h.store.load().unwrap().is_none());
+    }
+
+    /// 預設是剩餘，而且選了之後要留在檔案裡 —— 每次開面板都回到預設，
+    /// 等於這個設定不存在。
+    #[tokio::test]
+    async fn the_metric_defaults_to_remaining_and_survives() {
+        let h = harness(false).await;
+        assert_eq!(panel_data(&h.state).metric, store::Metric::Remaining);
+
+        write_metric(&h.state, store::Metric::Used).unwrap();
+
+        assert_eq!(panel_data(&h.state).metric, store::Metric::Used);
+        assert_eq!(
+            store::load_ui_state(&h.state.ui_state_path()).metric,
+            store::Metric::Used
+        );
+    }
+
     #[test]
     fn a_normal_tick_is_not_a_wake_up() {
         assert!(!woke_from_sleep(
@@ -1101,6 +1175,7 @@ mod tests {
             &store::UiState {
                 first_run_done: true,
                 tray_hint_dismissed: false,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1189,7 +1264,7 @@ mod tests {
             .await
             .is_err());
 
-        assert!(last_error(&h.state).unwrap().contains("憑證格式無效"));
+        assert!(last_error(&h.state).unwrap().contains("登入資料格式無效"));
         assert_eq!(h.store.load().unwrap(), None);
     }
 

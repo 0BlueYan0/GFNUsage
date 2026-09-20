@@ -1,9 +1,20 @@
-import { useState } from "react";
-import type { Schedule, ScheduleException, WeeklyWindow } from "./types";
+import { useEffect, useRef, useState } from "react";
+import type {
+  Metric,
+  Schedule,
+  ScheduleException,
+  WeeklyWindow,
+} from "./types";
 
 const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
 
 const MINUTES_PER_DAY = 1440;
+
+/**
+ * 自動儲存等這麼久才動手。夠長到一個詞打完只寫一次，短到按「返回」之前
+ * 多半已經寫好了 —— 沒寫好的那一份由 `close()` 補上。
+ */
+const AUTOSAVE_DELAY = 600;
 
 /** 新增時段的預設值：每天 00:00–07:00，也就是睡覺。 */
 const DEFAULT_END_MINUTE = 420;
@@ -78,27 +89,43 @@ function todayISO(): string {
 /**
  * 不可遊玩時段的設定表單。
  *
- * 受控元件：改動只留在自己的 state，按下「儲存」才交給父層寫檔，
- * 使用者改到一半關掉面板不會留下半套設定。
+ * 自動儲存：改完就寫，沒有儲存鍵。草稿還留在自己的 state 裡，因為改到一半
+ * 必然會經過不合法的狀態（剛取消最後一個星期、日期還沒填完）—— 那些不寫出去，
+ * 等它變合法再寫。
  */
 export default function ScheduleForm({
   value,
   busy,
+  metric,
   onSave,
   onExport,
   onImport,
+  onMetric,
   onClose,
 }: {
   value: Schedule;
   busy: boolean;
+  metric: Metric;
   /// 這三個回傳的 promise 被 reject 時，訊息會顯示在表單上。
   onSave: (schedule: Schedule) => Promise<void> | void;
   onExport: (schedule: Schedule) => Promise<void> | void;
   onImport: () => Promise<void> | void;
+  onMetric: (metric: Metric) => Promise<void> | void;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<Schedule>(value);
   const [error, setError] = useState<string | null>(null);
+
+  // 最後一次寫出去的那一份。初始值就是檔案裡那一份，所以剛打開設定不會
+  // 多寫一次。比對 identity 就夠了：任何一次 `setDraft` 都產生新物件。
+  const saved = useRef(value);
+
+  // 父層傳的是行內箭頭函式，每次 render 都是新的。放進相依陣列會讓計時器
+  // 每次 render 重置，於是永遠等不到那 600 毫秒。
+  const saveRef = useRef(onSave);
+  useEffect(() => {
+    saveRef.current = onSave;
+  });
 
   const patchWindow = (index: number, patch: Partial<WeeklyWindow>) =>
     setDraft((d) => ({
@@ -124,15 +151,31 @@ export default function ScheduleForm({
   };
 
   // 後端也會驗一次，而且擋得到這裡擋不到的東西（寫檔失敗、手改壞的欄位）。
-  // 那個錯誤一定要接回來顯示 —— 不然按下儲存就是毫無反應，
-  // 使用者只會以為程式當了，設定其實一個字都沒進去。
-  const save = () => {
+  // 那個錯誤一定要接回來顯示 —— 不然改了半天是毫無反應，使用者只會以為
+  // 程式當了，設定其實一個字都沒進去。
+  useEffect(() => {
     const problem = validate(draft);
     setError(problem);
-    if (problem) return;
-    void Promise.resolve(onSave(draft)).catch((reason) =>
-      setError(messageOf(reason)),
-    );
+    if (problem || draft === saved.current) return;
+
+    // debounce：標籤是逐字輸入的欄位，每打一個字寫一次檔，一個詞就是
+    // 五次磁碟寫入加五次 IPC。
+    const timer = setTimeout(() => {
+      saved.current = draft;
+      void Promise.resolve(saveRef.current(draft)).catch((reason) =>
+        setError(messageOf(reason)),
+      );
+    }, AUTOSAVE_DELAY);
+    return () => clearTimeout(timer);
+  }, [draft]);
+
+  // 按「返回」離開只有幾十毫秒，等不到 debounce。把還沒寫的那一份補寫。
+  const close = () => {
+    if (draft !== saved.current && !validate(draft)) {
+      saved.current = draft;
+      void Promise.resolve(saveRef.current(draft)).catch(() => {});
+    }
+    onClose();
   };
 
   // 匯出的是螢幕上這一份草稿，不是檔案裡那一份 —— 改到一半按匯出卻拿到
@@ -142,6 +185,13 @@ export default function ScheduleForm({
     setError(problem);
     if (problem) return;
     void Promise.resolve(onExport(draft)).catch((reason) =>
+      setError(messageOf(reason)),
+    );
+  };
+
+  const chooseMetric = (next: Metric) => {
+    setError(null);
+    void Promise.resolve(onMetric(next)).catch((reason) =>
       setError(messageOf(reason)),
     );
   };
@@ -158,18 +208,33 @@ export default function ScheduleForm({
   return (
     <div className="panel panel--scroll">
       <header className="panel__header">
-        <h1 className="panel__title">不可遊玩時段</h1>
-        <button className="link" onClick={onClose}>
+        <h1 className="panel__title">設定</h1>
+        <button className="link" onClick={close}>
           返回
         </button>
       </header>
 
-      <p className="note">
-        睡覺、上班這些不可能遊玩的時間。設定之後，配速與預測改用「可遊玩時間」
-        當分母，週末的正常遊玩就不會被誤判成超支。
-      </p>
+      <div className="setting">
+        <span>主要數字</span>
+        {/* 這個不走底下時段那套 debounce：只有兩個值，點了就該看到結果。 */}
+        <div className="setting__choice">
+          {(["remaining", "used"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={metric === option}
+              className={metric === option ? "chip chip--on" : "chip"}
+              onClick={() => chooseMetric(option)}
+            >
+              {option === "remaining" ? "剩餘" : "已使用"}
+            </button>
+          ))}
+        </div>
+      </div>
 
-      {empty && <p className="note">還沒有設定，目前以全天可遊玩計算。</p>}
+      <h2 className="section">不可遊玩時段</h2>
+
+      {empty && <p className="note">全天可遊玩</p>}
 
       {draft.weekly.map((window, index) => (
         <fieldset className="window" key={index}>
@@ -356,20 +421,15 @@ export default function ScheduleForm({
         新增一次性例外
       </button>
 
-      <p className="note">
-        一次性例外優先於每週時段；同一天有兩個例外時，以下面那個為準。
-      </p>
+      <p className="note">例外優先於每週時段</p>
 
       {error && <p className="alert">{error}</p>}
 
       <div className="actions">
-        <button className="primary" disabled={busy} onClick={save}>
-          {busy ? "儲存中…" : "儲存"}
-        </button>
-        <button className="link" disabled={busy} onClick={exportDraft}>
+        <button disabled={busy} onClick={exportDraft}>
           匯出
         </button>
-        <button className="link" disabled={busy} onClick={importFile}>
+        <button disabled={busy} onClick={importFile}>
           匯入
         </button>
       </div>

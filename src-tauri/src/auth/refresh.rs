@@ -202,7 +202,7 @@ impl CachedToken {
 ///
 /// 內部的 mutex 保證整個程序同時只有一次刷新在進行，因此定時輪詢、開啟面板、
 /// 以及 401 後的重試三者同時發生時，也不會各自呼叫一次 `/token`。
-/// 匯入與解除連結也在同一把鎖底下做：否則進行中的刷新寫回輪替結果時，
+/// 匯入與登出也在同一把鎖底下做：否則進行中的刷新寫回輪替結果時，
 /// 會把剛匯入的憑證蓋掉、或把剛清掉的憑證悄悄還原。
 ///
 /// 刷新會盡量少做：NVIDIA 限制同時有效的 access_token 數量，撞到上限會被擋，
@@ -306,7 +306,7 @@ impl TokenManager {
         Ok(())
     }
 
-    /// 清除憑證（解除連結）。
+    /// 清除憑證（登出）。
     pub async fn clear_credentials(&self) -> Result<(), GfnError> {
         let mut guard = self.cached.lock().await;
         *guard = None;
@@ -877,7 +877,7 @@ mod tests {
         assert_eq!(manager.ensure_token().await.unwrap(), FAR_FUTURE_JWT);
     }
 
-    /// 「解除連結」若不等進行中的刷新結束，刷新寫回的憑證會把清除悄悄還原。
+    /// 「登出」若不等進行中的刷新結束，刷新寫回的憑證會把清除悄悄還原。
     #[tokio::test]
     async fn clear_credentials_waits_for_an_in_flight_refresh() {
         let server = MockServer::start().await;

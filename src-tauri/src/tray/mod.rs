@@ -8,7 +8,7 @@ use tauri::tray::TrayIcon;
 use tauri::{AppHandle, Runtime};
 
 use crate::pace::PaceReport;
-use crate::quota::{DisplayState, QuotaSnapshot};
+use crate::quota::{human_duration, DisplayState, QuotaSnapshot};
 use crate::AppState;
 
 pub const TRAY_ID: &str = "main";
@@ -76,9 +76,9 @@ pub fn face(
 
     let mut tooltip = if snapshot.time_capped {
         format!(
-            "GeForce NOW：剩餘 {:.1} / {:.1} 小時",
-            snapshot.remaining_minutes as f32 / 60.0,
-            snapshot.total_minutes as f32 / 60.0
+            "GeForce NOW：剩餘 {} / {}",
+            human_duration(snapshot.remaining_minutes),
+            human_duration(snapshot.total_minutes)
         )
     } else {
         format!("GeForce NOW · {}：此方案沒有時數上限", snapshot.tier)
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(f.label, "103");
         assert_eq!(f.title.as_deref(), Some("103h"));
         assert_eq!(f.color, icon::state_color(DisplayState::Normal));
-        assert_eq!(f.tooltip, "GeForce NOW：剩餘 103.0 / 115.0 小時");
+        assert_eq!(f.tooltip, "GeForce NOW：剩餘 103 小時 / 115 小時");
     }
 
     /// 憑證死了，圖示不能還一副數字很正常的樣子。
@@ -276,6 +276,6 @@ mod tests {
         let f = face(Some(&snap), None, None, false, now());
         assert_eq!(f.label, "!");
         assert_eq!(f.color, icon::state_color(DisplayState::Exhausted));
-        assert!(f.tooltip.contains("0.0"), "{}", f.tooltip);
+        assert!(f.tooltip.contains("0 分鐘"), "{}", f.tooltip);
     }
 }
