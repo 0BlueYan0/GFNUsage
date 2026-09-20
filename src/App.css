@@ -296,3 +296,52 @@ textarea {
 .pace__waste {
   color: var(--fg-muted);
 }
+
+.panel--scroll {
+  height: auto;
+  min-height: 100vh;
+  overflow-y: auto;
+}
+
+.window {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.window__days {
+  display: flex;
+  gap: 4px;
+}
+
+.window__times,
+.window__foot {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.window__foot input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.chip {
+  flex: 1;
+  padding: 4px 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.chip--on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}

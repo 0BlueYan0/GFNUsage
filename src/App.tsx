@@ -3,11 +3,13 @@ import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 import { daysUntil, formatHours, formatResetAt, percentUsed } from "./format";
 import Pace from "./Pace";
+import ScheduleForm from "./Schedule";
 import type {
   DisplayState,
   PaceReport,
   PanelData,
   QuotaSnapshot,
+  Schedule,
 } from "./types";
 
 const STATE_BADGE: Record<DisplayState, string | null> = {
@@ -171,6 +173,8 @@ function SignIn({
 export default function App() {
   const [data, setData] = useState<PanelData | null>(null);
   const [busy, setBusy] = useState(false);
+  // 不是 null 就代表正在看設定畫面。開啟時才去讀設定，不必每次開面板都讀。
+  const [schedule, setSchedule] = useState<Schedule | null>(null);
 
   const load = useCallback(async () => {
     setData(await invoke<PanelData>("get_snapshot"));
@@ -234,6 +238,22 @@ export default function App() {
     );
   }
 
+  if (schedule) {
+    return (
+      <ScheduleForm
+        value={schedule}
+        busy={busy}
+        onClose={() => setSchedule(null)}
+        onSave={(next) =>
+          void run(async () => {
+            await invoke("set_schedule", { schedule: next });
+            setSchedule(null);
+          })
+        }
+      />
+    );
+  }
+
   const snapshot = data.snapshot;
   const badge = snapshot ? STATE_BADGE[data.state] : null;
 
@@ -275,6 +295,19 @@ export default function App() {
           onClick={() => void run(() => invoke("refresh_now"))}
         >
           {busy ? "更新中…" : "立即更新"}
+        </button>
+        <button
+          className="link"
+          disabled={busy}
+          onClick={() =>
+            // 讀不到設定就不開表單。拿一份空設定進去會讓使用者一按儲存
+            // 就把原本的設定清空。
+            void invoke<Schedule>("get_schedule")
+              .then(setSchedule)
+              .catch(() => {})
+          }
+        >
+          設定
         </button>
         <button
           className="link"
