@@ -2,7 +2,9 @@ pub mod api;
 pub mod auth;
 pub mod commands;
 pub mod error;
+pub mod pace;
 pub mod quota;
+pub mod store;
 pub mod tray;
 
 use std::sync::atomic::AtomicBool;
