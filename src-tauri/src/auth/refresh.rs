@@ -19,9 +19,53 @@ const REFRESH_MARGIN_MINUTES: i64 = 5;
 const TOO_MANY_TOKENS: &str = "Max allowed simultaneous valid access_token exceeded";
 
 #[derive(Deserialize)]
-struct TokenResponse {
-    id_token: String,
-    client_token: String,
+pub struct TokenResponse {
+    pub id_token: String,
+    pub client_token: String,
+}
+
+/// 送一次 `/token` 並把回應分類。
+///
+/// 刷新（`grant_type=…client_token`）與 OAuth 換碼
+/// （`grant_type=authorization_code`）共用這裡：兩條路的錯誤分類規則
+/// 必須一模一樣，否則同一個「同時有效 token 上限」在一邊是會自己好的
+/// 暫時狀況、在另一邊卻變成叫使用者重新登入（而重新登入完全沒有幫助）。
+///
+/// 4xx 一律不重試（spec §4.3 規則 3）。網路層錯誤回 `Network`，
+/// 由呼叫端決定要不要退避重試 —— 那種請求可能根本沒送達。
+pub async fn post_token(
+    http: &reqwest::Client,
+    auth_base: &str,
+    form: &[(&str, &str)],
+) -> Result<TokenResponse, GfnError> {
+    let response = http
+        .post(format!("{auth_base}/token"))
+        .form(form)
+        .send()
+        .await
+        .map_err(|e| GfnError::Network(e.to_string()))?;
+
+    let status = response.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(GfnError::RateLimited);
+    }
+    if status.is_client_error() {
+        let body = response.text().await.unwrap_or_default();
+        // 撞到 token 數量上限不是憑證失效，叫使用者重新登入毫無幫助。
+        return Err(if body.contains(TOO_MANY_TOKENS) {
+            GfnError::TooManyTokens
+        } else {
+            GfnError::NeedsLogin
+        });
+    }
+    if !status.is_success() {
+        return Err(GfnError::Network(format!("/token 回應 {status}")));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|e| GfnError::UnexpectedResponse(e.to_string()))
 }
 
 #[derive(Clone)]
@@ -102,10 +146,46 @@ impl TokenManager {
     /// 換成另一組憑證（匯入）。舊帳號的 id_token 一併丟棄，否則換了帳號之後
     /// 還沒過期的那顆會被繼續拿來查詢，畫面上就會顯示錯的人的額度。
     pub async fn replace_credentials(&self, session: StoredSession) -> Result<(), GfnError> {
+        self.replace_credentials_with_token(session, None).await
+    }
+
+    /// 同上，但順便收下一顆剛拿到的 id_token。
+    ///
+    /// OAuth 換碼的回應本來就附了一顆能用的 id_token。丟掉它再讓
+    /// `ensure_token()` 去要一顆新的，等於白白多鑄一顆，離「同時有效
+    /// access_token 上限」更近一步 —— 而剛登入完正是最不該撞上限的時候。
+    ///
+    /// 整段在同一把鎖底下：中途若有另一次刷新插進來，會把剛寫好的憑證
+    /// 或 id_token 蓋掉。
+    pub async fn replace_credentials_with_token(
+        &self,
+        session: StoredSession,
+        id_token: Option<&str>,
+    ) -> Result<(), GfnError> {
         let mut guard = self.cached.lock().await;
         *guard = None;
         self.store.clear_id_token()?;
-        self.store.save(&session)
+        self.store.save(&session)?;
+
+        let Some(id_token) = id_token else {
+            return Ok(());
+        };
+        let Some(expires_at) = jwt::expiry(id_token) else {
+            return Ok(());
+        };
+        // 和刷新那裡同樣的取捨：id_token 只是快取，寫不進去不算失敗。
+        // 只記長度，不記內容。
+        if let Err(e) = self.store.save_id_token(id_token) {
+            eprintln!(
+                "id_token（{} 字元）未能寫入金鑰儲存區，重啟後會重新取得：{e}",
+                id_token.len()
+            );
+        }
+        *guard = Some(CachedToken {
+            id_token: id_token.to_string(),
+            expires_at,
+        });
+        Ok(())
     }
 
     /// 清除憑證（解除連結）。
@@ -116,40 +196,17 @@ impl TokenManager {
     }
 
     async fn refresh(&self, stored: StoredSession) -> Result<CachedToken, GfnError> {
-        let response = self
-            .http
-            .post(format!("{}/token", self.auth_base))
-            .form(&[
+        let body = post_token(
+            &self.http,
+            &self.auth_base,
+            &[
                 ("grant_type", GRANT_TYPE),
                 ("client_token", stored.client_token.as_str()),
                 ("client_id", STARFLEET_CLIENT_ID),
                 ("sub", stored.sub.as_str()),
-            ])
-            .send()
-            .await
-            .map_err(|e| GfnError::Network(e.to_string()))?;
-
-        let status = response.status();
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(GfnError::RateLimited);
-        }
-        if status.is_client_error() {
-            let body = response.text().await.unwrap_or_default();
-            // 撞到 token 數量上限不是憑證失效，叫使用者重新登入毫無幫助。
-            return Err(if body.contains(TOO_MANY_TOKENS) {
-                GfnError::TooManyTokens
-            } else {
-                GfnError::NeedsLogin
-            });
-        }
-        if !status.is_success() {
-            return Err(GfnError::Network(format!("/token 回應 {status}")));
-        }
-
-        let body: TokenResponse = response
-            .json()
-            .await
-            .map_err(|e| GfnError::UnexpectedResponse(e.to_string()))?;
+            ],
+        )
+        .await?;
 
         let expires_at = jwt::expiry(&body.id_token)
             .ok_or_else(|| GfnError::UnexpectedResponse("id_token 沒有 exp claim".into()))?;

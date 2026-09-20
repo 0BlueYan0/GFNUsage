@@ -12,7 +12,11 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
-use crate::auth::refresh::STARFLEET_CLIENT_ID;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
+
+use crate::auth::jwt;
+use crate::auth::refresh::{post_token, STARFLEET_CLIENT_ID};
+use crate::auth::store::{StoredSession, CLIENT_TOKEN_LIFETIME_DAYS};
 use crate::error::GfnError;
 
 /// NVIDIA 白名單上的迴圈埠，來自客戶端設定的 `starfleet.portNumbers`。
@@ -181,9 +185,64 @@ pub async fn wait_for_code(listener: TcpListener, timeout: Duration) -> Result<S
         .map_err(|_| GfnError::LoginFailed("等了 5 分鐘還是沒有收到回應，登入取消".into()))?
 }
 
+/// 用授權碼換憑證。回傳可以存起來的憑證，以及回應裡附的那顆 id_token。
+///
+/// **這一步不送 `client_id`** —— 客戶端 bundle 的樣板就是這樣
+/// （spec §4.1、spike §4b）。`code_verifier` 則一定要送，少了它伺服器
+/// 直接拒絕。兩者都是從 bundle 讀出來的推測，未經實測；若實測回 400，
+/// 見計畫文件末尾的「應變」一節。
+pub async fn exchange(
+    http: &reqwest::Client,
+    auth_base: &str,
+    code: &str,
+    redirect_uri: &str,
+    verifier: &str,
+    nonce: &str,
+    now: DateTime<Utc>,
+) -> Result<(StoredSession, String), GfnError> {
+    let body = post_token(
+        http,
+        auth_base,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            // 必須和授權請求裡那一個逐字元相同。
+            ("redirect_uri", redirect_uri),
+            ("code_verifier", verifier),
+        ],
+    )
+    .await?;
+
+    // nonce 對不上代表這不是我們發起的那次授權。沒有 nonce claim 就不比 ——
+    // 樣板未經實測，不確定 NVIDIA 一定會回傳它，不能因此擋下能用的憑證。
+    if let Some(returned) = jwt::nonce(&body.id_token) {
+        if returned != nonce {
+            return Err(GfnError::LoginFailed("回應的 nonce 與請求不符".into()));
+        }
+    }
+
+    // 先驗再寫。sub 是空的就中止：那樣的憑證下次刷新必定 400，而那個 400
+    // 會被判成「需要重新登入」，使用者只看得到一次莫名其妙的登出。
+    let sub = jwt::subject(&body.id_token)
+        .ok_or_else(|| GfnError::UnexpectedResponse("id_token 沒有 sub claim".into()))?;
+
+    let session = StoredSession {
+        client_token: body.client_token,
+        sub,
+        // 換碼的回應沒有 client_token 的效期（只有 access_token 的
+        // `expires_in: 3600`）。用 GFN 客戶端自己記的 90 天推算。
+        client_token_expires_at: Some(now + ChronoDuration::days(CLIENT_TOKEN_LIFETIME_DAYS)),
+    };
+    Ok((session, body.id_token))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use chrono::TimeZone;
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
@@ -315,5 +374,161 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(problem, GfnError::LoginFailed(_)));
+    }
+
+    /// exp 在西元 2286 年，帶著 sub 與 nonce。
+    fn exchange_jwt() -> String {
+        format!(
+            "eyJhbGciOiJSUzI1NiJ9.{}.sig",
+            URL_SAFE_NO_PAD.encode(r#"{"exp":9999999999,"sub":"SUB456","nonce":"N1"}"#)
+        )
+    }
+
+    async fn mount_exchange(server: &MockServer, id_token: &str) {
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "AT",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "client_token": "CT-FRESH",
+                "id_token": id_token,
+            })))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn exchanges_a_code_for_a_credential() {
+        let server = MockServer::start().await;
+        let jwt = exchange_jwt();
+        mount_exchange(&server, &jwt).await;
+        let now = Utc.with_ymd_and_hms(2026, 9, 20, 0, 0, 0).unwrap();
+
+        let (session, id_token) = exchange(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "CODE",
+            &redirect_uri(2259),
+            "VERIFIER",
+            "N1",
+            now,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(session.client_token, "CT-FRESH");
+        // sub 在換碼的回應裡沒有頂層欄位，只能從 id_token 的 claim 取。
+        assert_eq!(session.sub, "SUB456");
+        // 回應也沒給 client_token 的效期，用 GFN 自己記的 90 天推算。
+        assert_eq!(
+            session.client_token_expires_at,
+            Some(now + ChronoDuration::days(CLIENT_TOKEN_LIFETIME_DAYS))
+        );
+        assert_eq!(id_token, jwt);
+    }
+
+    /// 換碼這一步不送 client_id（spec §4.1、spike §4b），但一定要送
+    /// code_verifier —— 少了它伺服器直接拒絕。
+    #[tokio::test]
+    async fn the_exchange_sends_the_verifier_and_no_client_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("grant_type=authorization_code"))
+            .and(body_string_contains("code_verifier=VERIFIER"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "client_token": "CT-FRESH",
+                "id_token": exchange_jwt(),
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        exchange(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "CODE",
+            &redirect_uri(2259),
+            "VERIFIER",
+            "N1",
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+        let request = &server.received_requests().await.unwrap()[0];
+        let body = String::from_utf8(request.body.clone()).unwrap();
+        assert!(!body.contains("client_id"));
+    }
+
+    /// nonce 對不上代表這不是我們發起的那次授權。
+    #[tokio::test]
+    async fn a_mismatched_nonce_is_refused() {
+        let server = MockServer::start().await;
+        mount_exchange(&server, &exchange_jwt()).await;
+
+        let problem = exchange(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "CODE",
+            &redirect_uri(2259),
+            "VERIFIER",
+            "SOMETHING-ELSE",
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(problem, GfnError::LoginFailed(_)));
+    }
+
+    /// 沒有 sub 的 id_token 換來的憑證下次刷新一定 400，而那個 400 會被
+    /// 判成「需要重新登入」—— 使用者只會看到莫名其妙的登出。當場擋下來。
+    #[tokio::test]
+    async fn an_id_token_without_a_subject_is_refused() {
+        let server = MockServer::start().await;
+        mount_exchange(&server, "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig").await;
+
+        assert!(exchange(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "CODE",
+            &redirect_uri(2259),
+            "VERIFIER",
+            "N1",
+            Utc::now(),
+        )
+        .await
+        .is_err());
+    }
+
+    /// 換碼撞到 token 數量上限時，分類要和刷新那條路一模一樣 ——
+    /// 叫使用者重新登入毫無幫助，他剛剛就是在登入。
+    #[tokio::test]
+    async fn the_token_cap_is_not_reported_as_a_login_problem() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "Max allowed simultaneous valid access_token exceeded",
+            })))
+            .mount(&server)
+            .await;
+
+        let problem = exchange(
+            &reqwest::Client::new(),
+            &server.uri(),
+            "CODE",
+            &redirect_uri(2259),
+            "VERIFIER",
+            "N1",
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(problem, GfnError::TooManyTokens));
     }
 }
