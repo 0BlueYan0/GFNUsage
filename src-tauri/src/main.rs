@@ -48,17 +48,35 @@ fn main() {
                 panel::show_default(app.handle());
             }
 
-            // 標準 flyout 行為：點到別的地方就收起來。
             if let Some(window) = app.get_webview_window(PANEL_LABEL) {
                 let handle = app.handle().clone();
-                window.on_window_event(move |event| {
-                    if matches!(event, WindowEvent::Focused(false)) {
+                window.on_window_event(move |event| match event {
+                    // Alt+F4 是這個面板唯一的關閉手勢 —— `decorations: false` 沒有
+                    // 關閉鈕，而首次啟動會主動把面板叫出來，正好是使用者想關掉它的
+                    // 時刻。不攔的話最後一個視窗被銷毀，整個程序跟著結束：使用者
+                    // 以為自己只是把面板收起來，實際上關掉的是常駐程式，額度從此
+                    // 不再更新，而且沒有任何提示。真的要離開走系統匣的「結束」，
+                    // 那條路是 `app.exit(0)`，不經過這裡。
+                    //
+                    // 變體與 enum 都是 `#[non_exhaustive]`，`..` 不能省。
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        if let Some(window) = handle.get_webview_window(PANEL_LABEL) {
+                            // 這一下 hide 會再觸發 Focused(false)，於是下面那一段
+                            // 也會跑一次，把 last_auto_hide 蓋上時間戳。那正是要的：
+                            // 緊接著的系統匣點擊應該被當成「剛關掉」，不要立刻重開。
+                            let _ = window.hide();
+                        }
+                    }
+                    // 標準 flyout 行為：點到別的地方就收起來。
+                    WindowEvent::Focused(false) => {
                         if let Some(window) = handle.get_webview_window(PANEL_LABEL) {
                             let _ = window.hide();
                         }
                         let state = handle.state::<Arc<AppState>>();
                         *state.last_auto_hide.lock().unwrap() = Some(Instant::now());
                     }
+                    _ => {}
                 });
             }
 
