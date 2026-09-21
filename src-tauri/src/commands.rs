@@ -267,7 +267,9 @@ fn used_today(
 ) -> Option<u32> {
     let midnight = pace::avail::local_midnight(now.with_timezone(&tz).date_naive(), tz)?;
     if let Some(sessions) = state.sessions.lock().unwrap().as_ref() {
-        return Some(crate::api::playtime::minutes_between(sessions, midnight, now));
+        return Some(crate::api::playtime::minutes_between(
+            sessions, midnight, now,
+        ));
     }
     let at_midnight = store::remaining_at(&state.history_path(), midnight, snapshot.span_start)?;
     Some(at_midnight.saturating_sub(snapshot.remaining_minutes))
@@ -888,8 +890,11 @@ mod tests {
             at("2026-09-21T08:00:00Z"),
         );
         // 台灣時間 9/20 23:00 到 9/21 01:00。
-        *h.state.sessions.lock().unwrap() =
-            Some(vec![play_session("2026-09-20T15:00:00Z", "2026-09-20T17:00:00Z", 114.0)]);
+        *h.state.sessions.lock().unwrap() = Some(vec![play_session(
+            "2026-09-20T15:00:00Z",
+            "2026-09-20T17:00:00Z",
+            114.0,
+        )]);
 
         let used = used_today(
             &h.state,

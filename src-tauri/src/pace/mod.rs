@@ -336,7 +336,14 @@ mod tests {
     #[test]
     fn no_playable_time_yet_means_no_pace_at_all() {
         let snap = snapshot(6000, 6000);
-        let r = compute(&snap, &Schedule::default(), at("2026-09-01T00:00:00Z"), UTC, None).unwrap();
+        let r = compute(
+            &snap,
+            &Schedule::default(),
+            at("2026-09-01T00:00:00Z"),
+            UTC,
+            None,
+        )
+        .unwrap();
         assert_eq!(r.note, Some(PaceNote::Insufficient));
         assert_eq!(r.over_pace_minutes, None);
         assert_eq!(r.burn_rate, None);
@@ -374,7 +381,14 @@ mod tests {
     #[test]
     fn an_expired_span_has_no_pace() {
         let snap = snapshot(6000, 4500);
-        assert!(compute(&snap, &Schedule::default(), at("2026-10-02T00:00:00Z"), UTC, None).is_none());
+        assert!(compute(
+            &snap,
+            &Schedule::default(),
+            at("2026-10-02T00:00:00Z"),
+            UTC,
+            None
+        )
+        .is_none());
     }
 
     /// 每天 00:00–08:00 睡覺，可遊玩時間一天 960 分鐘。
