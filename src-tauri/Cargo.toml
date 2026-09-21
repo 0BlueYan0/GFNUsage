@@ -37,3 +37,13 @@ tauri-plugin-dialog = "2"
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+
+# 發佈建置。刻意沒有 panic = "abort"：這個 codebase 的輪詢 task 裡都是
+# `.lock().unwrap()`，現在一個 poisoned mutex 只殺掉那條 task，系統匣停在
+# 最後一個數字，使用者按「立即更新」還有反應。改成 abort 就是整個程序消失，
+# 而且預設的 panic hook 寫 stderr —— 打包後那裡沒有人接。
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
