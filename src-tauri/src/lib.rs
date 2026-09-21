@@ -39,12 +39,21 @@ pub struct AppState {
     pub store: Arc<dyn TokenStore>,
     pub http: reqwest::Client,
     pub mes_base: String,
+    /// 逐場遊玩紀錄的主機。和 `mes_base` 分開，是因為它們是不同主機，
+    /// 而且只有這一個吃帳號頁那顆 client_id 簽的 token。
+    pub paywall_base: String,
     /// NVIDIA 登入端點。`TokenManager` 內部也有一份，但 OAuth 登入流程
     /// 在指令端組授權網址，從這裡拿。測試注入 mock server 的位址。
     pub auth_base: String,
     /// 這兩個用 std 的 Mutex 是刻意的：鎖絕不跨越 await 持有。
     /// 若之後需要在持鎖期間 await，要改成 tokio::sync::Mutex。
     pub snapshot: Mutex<Option<QuotaSnapshot>>,
+
+    /// 本期的逐場遊玩紀錄。
+    ///
+    /// `None` 與空 `Vec` 是兩件事：`None` 是這次沒抓到（拿它算今天用了多少
+    /// 會得到零，等於把玩過的時間當成沒玩），空 `Vec` 是本期真的沒玩過。
+    pub sessions: Mutex<Option<Vec<crate::api::playtime::PlaySession>>>,
     pub last_error: Mutex<Option<String>>,
 
     /// 設定檔讀不動時的訊息。與 `last_error` 分開存，檔案修好就能單獨清掉
@@ -101,6 +110,7 @@ impl AppState {
             http_client(HTTP_TIMEOUT),
             STARFLEET_BASE,
             MES_BASE,
+            crate::api::playtime::PAYWALL_BASE,
             settings_dir,
         )
     }
@@ -111,6 +121,7 @@ impl AppState {
         http: reqwest::Client,
         auth_base: &str,
         mes_base: &str,
+        paywall_base: &str,
         settings_dir: PathBuf,
     ) -> Self {
         let tokens = Arc::new(TokenManager::new(
@@ -128,9 +139,11 @@ impl AppState {
             store,
             http,
             mes_base: mes_base.to_string(),
+            paywall_base: paywall_base.to_string(),
             auth_base: auth_base.to_string(),
             settings_dir,
             snapshot: Mutex::new(None),
+            sessions: Mutex::new(None),
             pace: Mutex::new(None),
             schedule: Mutex::new(schedule),
             last_error: Mutex::new(None),

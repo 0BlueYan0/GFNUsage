@@ -43,7 +43,17 @@ pub struct PanelData {
     pub login_pending: bool,
     /// 主要數字與進度條看哪一邊。
     pub metric: store::Metric,
+
+    /// 最近幾場，新的在前。抓不到逐場紀錄時是空的。
+    pub recent_sessions: Vec<crate::api::playtime::PlaySession>,
 }
+
+/// 最多帶幾場給面板。
+///
+/// 「最近」是獨立的一頁，自己會捲，所以不是為了排版而切 —— 這個數字只是
+/// 上界，免得某個月玩得特別兇時每次開面板都把整份清單搬過去。
+/// 一個計費期實測是 38 場。
+const RECENT_SESSIONS: usize = 100;
 
 #[tauri::command]
 pub fn get_snapshot(state: State<'_, Arc<AppState>>) -> PanelData {
@@ -80,6 +90,17 @@ pub fn panel_data(state: &AppState) -> PanelData {
         show_tray_hint: cfg!(target_os = "windows") && !ui.tray_hint_dismissed,
         login_pending: state.login_pending.load(Ordering::SeqCst),
         metric: ui.metric,
+        // `fetch_session_history` 已經排好新的在前。
+        recent_sessions: state
+            .sessions
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .take(RECENT_SESSIONS)
+            .cloned()
+            .collect(),
     }
 }
 
@@ -229,6 +250,29 @@ pub fn import_schedule_from(state: &AppState, path: &std::path::Path) -> Result<
 /// 每個輪詢週期都要呼叫，即使這次抓取失敗：`A_past` 隨時間變大，
 /// 同一份快照的配速結論過幾小時就不一樣了。
 /// 順便從檔案重讀設定，使用者手動改檔案不必重開程式。
+/// 今天已經用掉多少分鐘。
+///
+/// 先問逐場紀錄：那是 NVIDIA 那邊的事實，程式昨晚有沒有開著都一樣準。
+/// 抓不到才從快照歷史回推「今日本地午夜的剩餘量減掉現在的」—— 那條要午夜
+/// 前後程式開著才答得出來，而剩餘時數沒變就不寫入的去重讓它更難答
+/// （見 `store::remaining_at`）。
+///
+/// 兩條都答不出來時回 `None`，`pace::compute` 會當成沒玩，今日額度因此偏大。
+/// 不回 `Some(0)`：那會讓「沒玩」和「不知道」在下游分不出來。
+fn used_today(
+    state: &AppState,
+    snapshot: &QuotaSnapshot,
+    now: DateTime<Utc>,
+    tz: chrono_tz::Tz,
+) -> Option<u32> {
+    let midnight = pace::avail::local_midnight(now.with_timezone(&tz).date_naive(), tz)?;
+    if let Some(sessions) = state.sessions.lock().unwrap().as_ref() {
+        return Some(crate::api::playtime::minutes_between(sessions, midnight, now));
+    }
+    let at_midnight = store::remaining_at(&state.history_path(), midnight, snapshot.span_start)?;
+    Some(at_midnight.saturating_sub(snapshot.remaining_minutes))
+}
+
 pub fn recompute_pace(state: &AppState, now: DateTime<Utc>) {
     // 壞掉的設定檔要講出來，不能靜默沿用上一份：使用者手改壞了卻看到
     // 一切正常，只會以為預測本來就長這樣。訊息存在自己的格子裡，
@@ -245,15 +289,9 @@ pub fn recompute_pace(state: &AppState, now: DateTime<Utc>) {
     let snapshot = state.snapshot.lock().unwrap().clone();
     let tz = pace::machine_tz();
 
-    // 今天用了多少，從歷史回推：今日本地午夜那一刻的剩餘量，減掉現在的。
-    // 任何一步答不出來就整個是 None，由 `pace::compute` 退回舊算法 ——
-    // 把沒觀測到的那段當成「沒玩」，會給出一個偏大的今日額度。
-    let used_today = snapshot.as_ref().and_then(|snapshot| {
-        let midnight = pace::avail::local_midnight(now.with_timezone(&tz).date_naive(), tz)?;
-        let at_midnight =
-            store::remaining_at(&state.history_path(), midnight, snapshot.span_start)?;
-        Some(at_midnight.saturating_sub(snapshot.remaining_minutes))
-    });
+    let used_today = snapshot
+        .as_ref()
+        .and_then(|snapshot| used_today(state, snapshot, now, tz));
 
     let report = snapshot
         .as_ref()
@@ -545,19 +583,54 @@ fn reset_state(state: &AppState) {
 /// 所有取得資料的路徑都經過 `ensure_token()`，也就是刷新 mutex 的唯一入口，
 /// 所以這裡的 401 重試不可能與定時輪詢同時燒掉輪替憑證。
 async fn fetch_snapshot(state: &AppState) -> Result<QuotaSnapshot, GfnError> {
-    let id_token = state.tokens.ensure_token().await?;
+    let mut id_token = state.tokens.ensure_token().await?;
 
     let subscription = match fetch_subscription(&state.http, &state.mes_base, &id_token).await {
         // 401 代表快取的 token 失效了：丟棄後重試一次。
         Err(GfnError::NeedsLogin) => {
             state.tokens.invalidate().await;
-            let fresh = state.tokens.ensure_token().await?;
-            fetch_subscription(&state.http, &state.mes_base, &fresh).await?
+            id_token = state.tokens.ensure_token().await?;
+            fetch_subscription(&state.http, &state.mes_base, &id_token).await?
         }
         other => other?,
     };
 
-    Ok(QuotaSnapshot::from_subscription(&subscription, Utc::now()))
+    let snapshot = QuotaSnapshot::from_subscription(&subscription, Utc::now());
+    fetch_sessions(state, &id_token, snapshot.span_start).await;
+    Ok(snapshot)
+}
+
+/// 抓本期的逐場遊玩紀錄，結果放進 `state.sessions`。
+///
+/// 盡力而為，錯誤不往外傳（CLAUDE.md 第 4 點）。這裡的 401 只代表
+/// `api-prod.nvidia.com` 不收這顆 token，`mes` 那邊剛剛才回過 200 ——
+/// 讓它變成 `NeedsLogin` 就是為了一個次要欄位把輪詢停掉、叫使用者重新登入。
+/// 抓不到就寫回 `None`，今天用了多少改由快照歷史回答。
+///
+/// 一個週期多一個 GET，不動 token 上限。
+async fn fetch_sessions(state: &AppState, id_token: &str, span_start: Option<DateTime<Utc>>) {
+    // 免費方案沒有「本期」，沒有起點就沒有查詢區間。
+    let Some(span_start) = span_start else {
+        *state.sessions.lock().unwrap() = None;
+        return;
+    };
+
+    let fetched = crate::api::playtime::fetch_session_history(
+        &state.http,
+        &state.paywall_base,
+        id_token,
+        span_start,
+        Utc::now(),
+    )
+    .await;
+
+    *state.sessions.lock().unwrap() = match fetched {
+        Ok(sessions) => Some(sessions),
+        Err(e) => {
+            eprintln!("逐場遊玩紀錄抓不到，今日額度改用快照歷史：{e}");
+            None
+        }
+    };
 }
 
 /// 抓取並把結果寫進共用狀態。失敗時保留上一次的快照，只記錄錯誤供面板顯示。
@@ -640,6 +713,7 @@ mod tests {
         let state = Arc::new(AppState::with(
             store.clone(),
             reqwest::Client::new(),
+            &server.uri(),
             &server.uri(),
             &server.uri(),
             settings.path().to_path_buf(),
@@ -753,6 +827,147 @@ mod tests {
         assert!(refresh_state(&h.state).await.is_err());
 
         assert!(history_lines(&h.state).is_empty());
+    }
+
+    fn at(text: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    async fn mount_session_history(server: &MockServer, template: ResponseTemplate) {
+        Mock::given(method("GET"))
+            .and(path("/gfn-paywall-api/api/v2/userplaytime/sessionshistory"))
+            .respond_with(template)
+            .mount(server)
+            .await;
+    }
+
+    fn play_session(start: &str, end: &str, minutes: f64) -> crate::api::playtime::PlaySession {
+        crate::api::playtime::PlaySession {
+            game_title: "Wuthering Waves".into(),
+            started_at: DateTime::parse_from_rfc3339(start).unwrap().into(),
+            ended_at: Some(DateTime::parse_from_rfc3339(end).unwrap().into()),
+            minutes,
+        }
+    }
+
+    /// 這是整件事的重點。使用者原本的問題就是這個：程式沒開著的那段
+    /// 玩了多久，快照差分答不出來，逐場紀錄答得出來。
+    ///
+    /// 歷史檔故意留白，那條路必定回 `None`。答案只可能來自逐場紀錄。
+    #[tokio::test]
+    async fn todays_usage_comes_from_the_play_history_not_the_snapshot_diff() {
+        let h = harness(true).await;
+        let snapshot = QuotaSnapshot::from_subscription(
+            &serde_json::from_str(FIXTURE).unwrap(),
+            at("2026-09-21T08:00:00Z"),
+        );
+        // UTC+8 的 9/21 00:00 是 UTC 的 9/20 16:00。兩場都在午夜之後。
+        *h.state.sessions.lock().unwrap() = Some(vec![
+            play_session("2026-09-21T04:24:42Z", "2026-09-21T06:21:03Z", 116.0),
+            play_session("2026-09-20T17:00:00Z", "2026-09-20T17:30:00Z", 29.0),
+        ]);
+
+        let used = used_today(
+            &h.state,
+            &snapshot,
+            at("2026-09-21T08:00:00Z"),
+            chrono_tz::Asia::Taipei,
+        );
+
+        assert_eq!(used, Some(145));
+    }
+
+    /// 昨晚 23:00 玩到今天 01:00，只有後一小時算今天的。
+    #[tokio::test]
+    async fn a_session_across_midnight_only_counts_its_half() {
+        let h = harness(true).await;
+        let snapshot = QuotaSnapshot::from_subscription(
+            &serde_json::from_str(FIXTURE).unwrap(),
+            at("2026-09-21T08:00:00Z"),
+        );
+        // 台灣時間 9/20 23:00 到 9/21 01:00。
+        *h.state.sessions.lock().unwrap() =
+            Some(vec![play_session("2026-09-20T15:00:00Z", "2026-09-20T17:00:00Z", 114.0)]);
+
+        let used = used_today(
+            &h.state,
+            &snapshot,
+            at("2026-09-21T08:00:00Z"),
+            chrono_tz::Asia::Taipei,
+        );
+
+        assert_eq!(used, Some(57));
+    }
+
+    /// 抓不到和「本期沒玩過」不是同一件事。抓不到要退回快照歷史，
+    /// 當成零會把玩過的時間送回給今日額度。
+    #[tokio::test]
+    async fn an_unavailable_history_falls_back_instead_of_counting_zero() {
+        let h = harness(true).await;
+        let snapshot = QuotaSnapshot::from_subscription(
+            &serde_json::from_str(FIXTURE).unwrap(),
+            at("2026-09-21T08:00:00Z"),
+        );
+        assert_eq!(*h.state.sessions.lock().unwrap(), None);
+
+        // 歷史檔也是空的，兩條路都答不出來。
+        let used = used_today(
+            &h.state,
+            &snapshot,
+            at("2026-09-21T08:00:00Z"),
+            chrono_tz::Asia::Taipei,
+        );
+
+        assert_eq!(used, None);
+    }
+
+    /// CLAUDE.md 第 4 點。`api-prod` 回 401 只代表它不收這顆 token，
+    /// 而 `mes` 前一秒才回過 200。讓它變成 `NeedsLogin` 就是為了一個次要
+    /// 欄位把輪詢停掉、叫使用者重新登入。
+    #[tokio::test]
+    async fn a_rejected_play_history_does_not_pause_polling() {
+        let h = harness(true).await;
+        mount_token(&h.server, 1).await;
+        mount_subscriptions(
+            &h.server,
+            ResponseTemplate::new(200).set_body_raw(FIXTURE, "application/json"),
+        )
+        .await;
+        mount_session_history(&h.server, ResponseTemplate::new(401)).await;
+
+        let snapshot = refresh_state(&h.state).await;
+
+        assert!(snapshot.is_ok(), "訂閱抓到了就不該整次失敗");
+        assert!(!h.state.needs_login.load(Ordering::SeqCst));
+        assert_eq!(last_error(&h.state), None);
+        assert_eq!(*h.state.sessions.lock().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn the_panel_gets_every_session_up_to_the_cap() {
+        let h = harness(false).await;
+        let many: Vec<_> = (0..8)
+            .map(|i| {
+                play_session(
+                    &format!("2026-09-2{}T04:00:00Z", i % 10),
+                    &format!("2026-09-2{}T05:00:00Z", i % 10),
+                    57.0,
+                )
+            })
+            .collect();
+        *h.state.sessions.lock().unwrap() = Some(many);
+
+        // 獨立一頁自己會捲，不為了排版切掉。
+        assert_eq!(panel_data(&h.state).recent_sessions.len(), 8);
+    }
+
+    /// 抓不到就不列，不是列一排空的。
+    #[tokio::test]
+    async fn the_panel_lists_nothing_when_there_is_no_history() {
+        let h = harness(false).await;
+        assert!(panel_data(&h.state).recent_sessions.is_empty());
     }
 
     /// 面板要看得到「有一次登入正在進行」。

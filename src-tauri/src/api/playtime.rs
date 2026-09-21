@@ -11,6 +11,7 @@ pub const PAYWALL_BASE: &str = "https://api-prod.nvidia.com";
 /// 27），扣的是實際串流時間。本期所有場次加總等於 `/v4/subscriptions` 的
 /// `T − R`，所以它可以拿來算今天用了多少（spike 3a）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaySession {
     pub game_title: String,
     pub started_at: DateTime<Utc>,
