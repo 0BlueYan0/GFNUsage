@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要建置的既有 tag，例如 v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  guard:
+    # 唯一的目的：tag 和原始碼裡的版本對不起來時，在燒掉三台 runner 之前
+    # 就停下來。版本只有 src-tauri/Cargo.toml 一個來源，另外兩個是跟著它走。
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          cargo_v=$(grep -m1 '^version = ' src-tauri/Cargo.toml | sed -E 's/^version = "(.*)"$/\1/')
+          pkg_v=$(node -p "require('./package.json').version")
+          conf_v=$(node -p "require('./src-tauri/tauri.conf.json').version ?? ''")
+          echo "tag=$tag  Cargo.toml=$cargo_v  package.json=$pkg_v  tauri.conf.json='$conf_v'"
+          if [ -n "$conf_v" ]; then
+            echo "::error::tauri.conf.json 不該有 version，唯一來源是 src-tauri/Cargo.toml"
+            exit 1
+          fi
+          if [ "$tag" != "v$cargo_v" ]; then
+            echo "::error::tag $tag 與 src-tauri/Cargo.toml 的 $cargo_v 不一致"
+            exit 1
+          fi
+          if [ "$pkg_v" != "$cargo_v" ]; then
+            echo "::error::package.json 的 $pkg_v 與 Cargo.toml 的 $cargo_v 不一致"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$cargo_v" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: guard
+    strategy:
+      # macOS 沒有人實測過。它掛掉不該把 Windows 的安裝檔一起拖下水。
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+            rust-targets: ""
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+            rust-targets: "aarch64-apple-darwin"
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+            rust-targets: "x86_64-apple-darwin"
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+          key: ${{ matrix.platform }}-${{ matrix.rust-targets }}
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 私鑰掉了就沒有升級路徑：已經裝出去的版本只認編進去的那把公鑰。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # 用 tag 本身，不要 v__VERSION__：tauri.conf.json 已經沒有 version，
+          # 不必再把 action 自己那套版本偵測牽進來。
+          tagName: ${{ needs.guard.outputs.tag }}
+          releaseName: GFNUsage ${{ needs.guard.outputs.tag }}
+          releaseBody: |
+            ## Windows
+
+            下載 `GFNUsage_${{ needs.guard.outputs.version }}_x64-setup.exe`。
+
+            這個專案沒有買程式碼簽章憑證，SmartScreen 會跳「已保護您的電腦」
+            並顯示不明的發行者，按**其他資訊** → **仍要執行**。
+            裝在使用者資料夾，不需要系統管理員權限。
+
+            ## macOS
+
+            未簽章也未公證，而且沒有人實測過。第一次開啟要在 app 上按右鍵選
+            **打開**，或到**系統設定 → 隱私權與安全性**放行。
+          # 草稿。人工確認過再按發佈 —— 按下去那一刻使用者才收得到更新。
+          releaseDraft: true
+          prerelease: false
+          # latest.json。releases/latest 不含 pre-release，所以上面那行不能勾。
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          # 三條 matrix 會同時去找或建同一個草稿，會撞。
+          retryAttempts: 2
+          args: ${{ matrix.args }}
