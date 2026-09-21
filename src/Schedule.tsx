@@ -206,8 +206,10 @@ export default function ScheduleForm({
   const empty = draft.weekly.length === 0 && draft.exceptions.length === 0;
 
   return (
-    <div className="panel panel--scroll">
-      <header className="panel__header">
+    <div className="panel panel--scroll panel--pinned">
+      {/* 和「最近」同一個作法：時段一多這一頁就要捲，捲到底想回上一頁，
+          不該先一路捲回頂端。 */}
+      <header className="panel__header panel__header--sticky">
         <h1 className="panel__title">設定</h1>
         <button className="link" onClick={close}>
           返回
