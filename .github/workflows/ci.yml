@@ -4,6 +4,15 @@ on:
   pull_request:
   push:
     branches: [main, "m*-*"]
+  # release.yml 在建安裝檔之前呼叫這一份。不重寫一次同樣的 job：兩份會走鐘，
+  # 而走鐘的那一天就是「main 是綠的」跟「發出去的東西是綠的」不再是同一件事。
+  workflow_call:
+    inputs:
+      ref:
+        description: "要檢查的 ref。從 release.yml 呼叫時給 tag，其餘留空。"
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -14,6 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 空字串等於不指定，checkout 用觸發這次執行的 ref。
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -31,6 +43,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 空字串等於不指定，checkout 用觸發這次執行的 ref。
+          ref: ${{ inputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

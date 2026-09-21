@@ -49,8 +49,17 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$cargo_v" >> "$GITHUB_OUTPUT"
 
-  build:
+  # CI 只在 main、m*-* 與 PR 上跑，tag 不觸發它。沒有這一段的話，
+  # 「在 main 上綠過」跟「這個 tag 是綠的」之間可以塞進任意多次修改，
+  # 而建出來的東西會直接變成草稿 release 等著按發佈。
+  test:
     needs: guard
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.guard.outputs.tag }}
+
+  build:
+    needs: [guard, test]
     strategy:
       # macOS 沒有人實測過。它掛掉不該把 Windows 的安裝檔一起拖下水。
       fail-fast: false
