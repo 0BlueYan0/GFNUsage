@@ -467,9 +467,12 @@ textarea {
   margin: 0;
 }
 
+/* 置中，和上面的 `.warn` 同一條。`flex-start` 只在文字長到換行時看起來對：
+   那時文字比按鈕高，貼上緣就是貼整條的上緣。更新那一條只有一行字，文字
+   18px、按鈕 32.4px，貼上緣等於比按鈕高 7.2px。 */
 .hint {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
   padding: 8px 10px;
   border: 1px solid var(--line);
@@ -482,10 +485,6 @@ textarea {
   color: var(--fg-muted);
   font-size: 12px;
   line-height: 1.5;
-}
-
-.hint button {
-  align-self: center;
 }
 
 .sessions__list {
