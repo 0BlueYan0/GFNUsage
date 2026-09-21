@@ -214,8 +214,6 @@ body {
   flex-direction: column;
   gap: 14px;
   overflow-y: auto;
-  /* 捲軸出現時不要壓到文字。 */
-  scrollbar-gutter: stable;
 }
 
 .actions {
@@ -473,21 +471,6 @@ textarea {
 
 .hint button {
   align-self: center;
-}
-
-.sessions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-}
-
-.sessions__title {
-  margin: 0;
-  color: var(--fg-muted);
-  font-size: 12.5px;
-  font-weight: 400;
 }
 
 .sessions__list {

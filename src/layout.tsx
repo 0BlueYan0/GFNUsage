@@ -6,7 +6,7 @@
  * 被切掉的是最底下那排按鈕。這一頁餵一份假的 `PanelData` 給真正的 `App`，
  * 用瀏覽器開到 360×480 就看得到實際結果。
  *
- *   npm run dev   →  http://localhost:5173/layout.html
+ *   npm run dev   →  http://localhost:1420/layout.html
  */
 import { createRoot } from "react-dom/client";
 import type { PanelData } from "./types";
@@ -15,7 +15,7 @@ function session(startedAt: string, gameTitle: string, minutes: number) {
   return { gameTitle, startedAt, endedAt: null, minutes };
 }
 
-/// 最擠的情況：五場紀錄、配速三列都在、加購與上期未用完都有值。
+/// 最擠的情況：40 場紀錄、配速三列都在、加購與上期未用完都有值。
 const DATA: PanelData = {
   snapshot: {
     tier: "ULTIMATE",
@@ -54,7 +54,7 @@ const DATA: PanelData = {
   showTrayHint: false,
   loginPending: false,
   metric: "remaining",
-  // 40 場：驗「玩的遊戲多了」那一頁會不會被切掉，以及標題有沒有釘住。
+  // 驗「玩的遊戲多了」那一頁會不會被切掉，以及標題有沒有釘住。實測一期 38 場。
   recentSessions: Array.from({ length: 40 }, (_, i) =>
     session(
       `2026-09-${String(21 - Math.floor(i / 4)).padStart(2, "0")}T${String(i % 24).padStart(2, "0")}:24:42Z`,
