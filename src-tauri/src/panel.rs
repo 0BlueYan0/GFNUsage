@@ -3,9 +3,20 @@
 //! 放在 lib 而不是 `main.rs`：登入完成與首次啟動都要把面板叫出來，
 //! 而那兩處都在指令端，碰不到 binary 裡的函式。
 
-use tauri::{AppHandle, Manager, PhysicalPosition, Runtime, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Runtime, WebviewWindow};
 
 pub const PANEL_LABEL: &str = "main";
+
+/// 面板顯示出來了，前端該重讀一次資料。
+///
+/// 前端本來只靠 `document` 的 `visibilitychange`，而在 Windows 上那個事件
+/// 不會來：`window.hide()` 走的是 `WindowMessage::Hide`，動到的是 tao 的原生
+/// 視窗；會讓 `visibilityState` 變 hidden 的是 WebView2 控制器的 `IsVisible`，
+/// 那要 `WebviewMessage::Hide` 才會碰，而這支程式沒有走那條路。
+///
+/// 症狀是面板停在啟動當下那一份：那時第一輪輪詢還沒回來，所以系統匣有數字、
+/// 面板寫「沒有資料」，而且按了「立即更新」以外的方式都不會變。
+pub const SHOWN_EVENT: &str = "panel-shown";
 
 /// 面板與螢幕可用區邊緣的間距。
 const PANEL_MARGIN: i32 = 12;
@@ -56,6 +67,10 @@ pub fn show<R: Runtime>(window: &WebviewWindow<R>, near: PhysicalPosition<f64>) 
     position(window, near);
     let _ = window.show();
     let _ = window.set_focus();
+    // 每一條把面板叫出來的路都經過這裡：系統匣點擊、首次啟動、登入完成、
+    // 第二份程序。事件送不出去不算失敗 —— 那時畫面上是上一份資料，
+    // 跟沒有這行一樣，不值得為它中斷顯示。
+    let _ = window.emit(SHOWN_EVENT, ());
 }
 
 /// 沒有點擊座標時把面板叫出來（首次啟動、登入完成）。

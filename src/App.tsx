@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 import Banners from "./Banners";
@@ -130,6 +131,9 @@ function Quota({
   );
 }
 
+/** 後端在面板顯示出來時送的事件。字串要和 `panel::SHOWN_EVENT` 一致。 */
+const PANEL_SHOWN = "panel-shown";
+
 interface AboutData {
   version: string | null;
   updateVersion: string | null;
@@ -187,7 +191,18 @@ export default function App() {
       }
     };
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    // 主要靠這個，不是靠 `visibilitychange`。面板收起來走的是原生視窗的
+    // hide，WebView2 的文件一直是 visible，那個事件不會來 —— 沒有這條的話
+    // 面板停在啟動當下那一份，系統匣已經有數字了它還寫「沒有資料」。
+    // `visibilitychange` 留著：macOS 沒實測過，多一條沒有壞處。
+    const shown = listen(PANEL_SHOWN, () => {
+      void load();
+      void refreshInBackground();
+    });
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      void shown.then((stop) => stop());
+    };
   }, [load, refreshInBackground]);
 
   /**
