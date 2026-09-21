@@ -1,0 +1,51 @@
+{
+  "sessionHistory": [
+    {
+      "gameId": "103053062",
+      "gameTitle": "Wuthering Waves",
+      "sessionStartDate": "2026-09-21T04:24:42.000Z",
+      "sessionEndDate": "2026-09-21T06:21:03.000Z",
+      "totalPlaytime": 116.0
+    },
+    {
+      "gameId": "100358911",
+      "gameTitle": "Clair Obscur: Expedition 33",
+      "sessionStartDate": "2026-09-20T15:30:00.000Z",
+      "sessionEndDate": "2026-09-20T16:30:00.000Z",
+      "totalPlaytime": 57.0
+    },
+    {
+      "gameId": "103053062",
+      "gameTitle": "Wuthering Waves",
+      "sessionStartDate": "2026-09-16T04:20:43.000Z",
+      "sessionEndDate": "2026-09-16T05:12:40.000Z",
+      "totalPlaytime": 51.0
+    },
+    {
+      "gameId": "101160083",
+      "gameTitle": "WARDOGS",
+      "sessionStartDate": "2026-09-15T04:43:55.000Z",
+      "sessionEndDate": "2026-09-15T05:00:07.000Z",
+      "totalPlaytime": 16.0
+    },
+    {
+      "gameId": "104000001",
+      "gameTitle": "沒有結束時間的一場",
+      "sessionStartDate": "2026-09-21T07:00:00.000Z",
+      "totalPlaytime": 10.0
+    },
+    {
+      "gameId": "104000002",
+      "gameTitle": "沒有開始時間，整筆要丟掉"
+    }
+  ],
+  "aggregatedSessionsByGame": [
+    {
+      "gameTitle": "Wuthering Waves",
+      "startDate": "2026-09-21T03:52:52.000Z",
+      "endDate": "2026-09-21T06:21:03.000Z",
+      "totalPlaytime": 134
+    }
+  ],
+  "totalRecordCount": 6
+}
