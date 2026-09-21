@@ -13,6 +13,7 @@ import {
 } from "./format";
 import Pace from "./Pace";
 import Sessions from "./Sessions";
+import About from "./About";
 import ScheduleForm from "./Schedule";
 import type {
   DisplayState,
@@ -129,6 +130,13 @@ function Quota({
   );
 }
 
+interface AboutData {
+  version: string | null;
+  updateVersion: string | null;
+  installing: boolean;
+  autostart: boolean | null;
+}
+
 export default function App() {
   const [data, setData] = useState<PanelData | null>(null);
   const [busy, setBusy] = useState(false);
@@ -142,6 +150,10 @@ export default function App() {
   const [starting, setStarting] = useState(false);
   // 看不看得到「最近」那一頁。紀錄本身跟著 `PanelData` 一起來，這裡只管畫面。
   const [showSessions, setShowSessions] = useState(false);
+  // 關於頁的資料。`null` 代表還沒開過那一頁 —— 版本與開機設定跟額度無關，
+  // 沒必要每次開面板都去問。
+  const [about, setAbout] = useState<AboutData | null>(null);
+  const [aboutError, setAboutError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setData(await invoke<PanelData>("get_snapshot"));
@@ -182,6 +194,45 @@ export default function App() {
       await task();
     } finally {
       await load();
+      setBusy(false);
+    }
+  };
+
+  /** 問齊關於頁要的三樣。任何一樣讀不到就留 null，那一塊不畫。 */
+  const loadAbout = async (): Promise<AboutData> => {
+    const [version, update, autostart] = await Promise.all([
+      invoke<string>("app_version").catch(() => null),
+      invoke<{ version: string | null; installing: boolean }>(
+        "get_update_status",
+      ).catch(() => null),
+      invoke<boolean>("get_autostart").catch(() => null),
+    ]);
+    return {
+      version,
+      updateVersion: update?.version ?? null,
+      installing: update?.installing ?? false,
+      autostart,
+    };
+  };
+
+  const openAbout = async () => {
+    setAboutError(null);
+    setAbout(await loadAbout());
+  };
+
+  /**
+   * 關於頁的動作。錯誤留在那一頁，不寫進 `last_error` —— 那一格講的是額度，
+   * 混進「開機啟動設不起來」只會讓兩件事都看不懂。
+   */
+  const runAbout = async (task: () => Promise<unknown>) => {
+    setBusy(true);
+    setAboutError(null);
+    try {
+      await task();
+    } catch (reason) {
+      setAboutError(typeof reason === "string" ? reason : String(reason));
+    } finally {
+      setAbout(await loadAbout());
       setBusy(false);
     }
   };
@@ -228,15 +279,54 @@ export default function App() {
     <Banners
       clientTokenExpiresAt={data.clientTokenExpiresAt}
       showTrayHint={data.showTrayHint}
+      // `withLogin` 為真的那一次就是主面板（登入畫面走 false）。
+      // 登入畫面不談更新：那時使用者要做的只有一件事。
+      updateVersion={withLogin ? data.updateVersion : null}
       busy={busy}
       loggingIn={starting || data.loginPending}
       onDismissHint={() => runQuietly(() => invoke("dismiss_tray_hint"))}
+      onInstallUpdate={() => runQuietly(() => invoke("install_update"))}
+      onDismissUpdate={() =>
+        runQuietly(() =>
+          invoke("dismiss_update", { version: data.updateVersion }),
+        )
+      }
       onLogin={withLogin ? login : undefined}
       onCancelLogin={
         withLogin ? () => void invoke("cancel_login_command") : undefined
       }
     />
   );
+
+  // 關於頁排在登入判斷之前：版本號與開機啟動跟帳號無關，登入過期時
+  // 不該把使用者從這一頁踢走。
+  if (about) {
+    return (
+      <About
+        version={about.version}
+        updateVersion={about.updateVersion}
+        installing={about.installing}
+        autostart={about.autostart}
+        busy={busy}
+        error={aboutError}
+        onClose={() => {
+          setAbout(null);
+          setAboutError(null);
+        }}
+        onCheckUpdate={() =>
+          void runAbout(async () => {
+            await invoke("check_update_now");
+          })
+        }
+        onInstallUpdate={() =>
+          void runAbout(() => invoke("install_update"))
+        }
+        onAutostart={(enabled) =>
+          void runAbout(() => invoke("set_autostart", { enabled }))
+        }
+      />
+    );
+  }
 
   // 設定畫面排在憑證判斷之前：時段設定與帳號無關，背景輪詢剛好把憑證
   // 判死時，不該把使用者正在填的一整排時段無聲清掉。
@@ -369,6 +459,13 @@ export default function App() {
           }
         >
           設定
+        </button>
+        <button
+          className="link"
+          disabled={busy}
+          onClick={() => void openAbout()}
+        >
+          關於
         </button>
         <button
           className="link"

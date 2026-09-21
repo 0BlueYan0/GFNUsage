@@ -6,17 +6,24 @@ const WARN_WITHIN_DAYS = 7;
 export default function Banners({
   clientTokenExpiresAt,
   showTrayHint,
+  updateVersion,
   busy,
   loggingIn,
   onDismissHint,
+  onInstallUpdate,
+  onDismissUpdate,
   onLogin,
   onCancelLogin,
 }: {
   clientTokenExpiresAt: string | null;
   showTrayHint: boolean;
+  /// 有新版本可以裝。登入畫面不給，那裡還沒有資格談更新。
+  updateVersion?: string | null;
   busy: boolean;
   loggingIn?: boolean;
   onDismissHint: () => void;
+  onInstallUpdate?: () => void;
+  onDismissUpdate?: () => void;
   /// 給了才畫重新登入鈕。登入畫面不給。
   onLogin?: () => void;
   onCancelLogin?: () => void;
@@ -32,6 +39,22 @@ export default function Banners({
 
   return (
     <>
+      {/* 這一條在 `.panel__body` 裡，而那一層是 overflow-y: auto，
+          擠不到底下的 `.actions`。 */}
+      {updateVersion && onInstallUpdate && (
+        <div className="hint">
+          <p>有新版本 {updateVersion}</p>
+          <button className="link" disabled={busy} onClick={onInstallUpdate}>
+            更新
+          </button>
+          {onDismissUpdate && (
+            <button className="link" disabled={busy} onClick={onDismissUpdate}>
+              知道了
+            </button>
+          )}
+        </div>
+      )}
+
       {showTrayHint && (
         <div className="hint">
           <p>

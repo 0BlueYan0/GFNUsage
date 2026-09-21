@@ -101,4 +101,6 @@ export interface PanelData {
    */
   loginPending: boolean;
   metric: Metric;
+  /** 查到、使用者還沒關掉提示的新版本。沒有就是已經最新。 */
+  updateVersion: string | null;
 }

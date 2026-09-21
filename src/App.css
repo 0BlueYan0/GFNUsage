@@ -184,6 +184,21 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 一個開關加它的說明。整塊可點，不要只有那個小方格。 */
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.toggle input {
+  flex: 0 0 auto;
+  margin: 0;
+  cursor: pointer;
+}
+
 .note {
   margin: 0;
   color: var(--fg-muted);

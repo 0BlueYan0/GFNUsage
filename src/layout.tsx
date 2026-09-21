@@ -15,7 +15,8 @@ function session(startedAt: string, gameTitle: string, minutes: number) {
   return { gameTitle, startedAt, endedAt: null, minutes };
 }
 
-/// 最擠的情況：40 場紀錄、配速三列都在、加購與上期未用完都有值。
+/// 最擠的情況：40 場紀錄、配速三列都在、加購與上期未用完都有值，
+/// 再加上一條「有新版本」的橫幅。
 const DATA: PanelData = {
   snapshot: {
     tier: "ULTIMATE",
@@ -68,12 +69,13 @@ const DATA: PanelData = {
       16 + i * 7,
     ),
   ),
+  updateVersion: "0.1.1",
 };
 
 // `invoke` 走 `window.__TAURI_INTERNALS__`，在瀏覽器裡沒有這個物件。
 // 先補上再載入 `App` —— import 會被提升，所以用動態 import。
-/// `?screen=signin` 看登入畫面，不帶參數看主面板。兩個畫面的容器不一樣
-/// （`.panel--scroll` 對 `.panel`），改版面兩個都要看。
+/// `?screen=signin` 看登入畫面，`?screen=about` 看關於頁，不帶參數看主面板。
+/// 三個畫面的容器不一樣（`.panel--scroll` 對 `.panel`），改版面都要看。
 const SIGN_IN = new URLSearchParams(location.search).get("screen") === "signin";
 
 (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
@@ -83,6 +85,12 @@ const SIGN_IN = new URLSearchParams(location.search).get("screen") === "signin";
         ? { ...DATA, snapshot: null, pace: null, hasCredentials: false, recentSessions: [] }
         : DATA;
     }
+    // 關於頁要的三樣。給有值的版本，不然那一頁空著就看不出版面。
+    if (command === "app_version") return "0.1.0";
+    if (command === "get_update_status") {
+      return { version: "0.1.1", installing: false };
+    }
+    if (command === "get_autostart") return false;
     return null;
   },
   transformCallback: (callback: unknown) => callback,
