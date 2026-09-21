@@ -6,6 +6,7 @@ import SignIn from "./SignIn";
 import {
   formatCountdown,
   formatDuration,
+  formatHeroUnit,
   formatResetAt,
   percentOf,
   splitDuration,
@@ -66,8 +67,7 @@ function Quota({
           {shown.hours > 0 ? shown.hours : shown.mins}
         </span>
         <span className="hero__unit">
-          {shown.hours > 0 ? "小時" : "分鐘"}
-          {shown.hours > 0 && shown.mins > 0 && ` ${shown.mins} 分`}
+          {formatHeroUnit(value)}
           {" / "}
           {formatDuration(snapshot.totalMinutes)}
         </span>
@@ -192,9 +192,8 @@ export default function App() {
   /**
    * 登入自己一條路，不走 `run()`。
    *
-   * 差別只有一個但很要緊：期間**不**鎖住其他按鈕。登入要等使用者在
-   * 瀏覽器裡操作，可能五分鐘，也可能他關掉分頁就再也不回來了 ——
-   * 那時底下的匯入正是出口，不能跟著一起被鎖住。
+   * 差別只有一個但很要緊：期間**不**鎖住取消那一顆。登入要等使用者在
+   * 登入視窗裡操作，可能五分鐘 —— 取消是那時唯一的出口。
    */
   const login = () => {
     setStarting(true);
@@ -280,10 +279,6 @@ export default function App() {
         banners={banners(false)}
         onLogin={login}
         onCancelLogin={() => void invoke("cancel_login_command")}
-        onImportLocal={() => runQuietly(() => invoke("import_from_local_gfn"))}
-        onImportManual={(value) =>
-          runQuietly(() => invoke("import_manual", { data: value }))
-        }
       />
     );
   }

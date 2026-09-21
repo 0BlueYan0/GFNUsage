@@ -3,6 +3,7 @@ import {
   daysUntil,
   formatCountdown,
   formatDuration,
+  formatHeroUnit,
   formatOverPace,
   formatResetAt,
   percentOf,
@@ -125,5 +126,29 @@ describe("formatCountdown", () => {
     expect(
       formatCountdown("2026-10-16T07:59:00+08:00", at("2026-10-17T00:00:00+08:00")),
     ).toBe("0 分鐘");
+  });
+});
+
+describe("formatHeroUnit", () => {
+  /// 大字那一行沒有用 formatDuration，所以「不用小數點的小時」那條規則
+  /// 上次沒管到它，留著「5 分」。這幾個斷言就是為了不再發生。
+  it("有餘數就把餘數講成分鐘", () => {
+    expect(formatHeroUnit(6185)).toBe("小時 5 分鐘");
+  });
+
+  it("整點不講零分", () => {
+    expect(formatHeroUnit(120)).toBe("小時");
+  });
+
+  it("不滿一小時時單位就是分鐘", () => {
+    expect(formatHeroUnit(45)).toBe("分鐘");
+    expect(formatHeroUnit(0)).toBe("分鐘");
+  });
+
+  /// 大字印的是小時、單位那串補餘數，兩段合起來要跟 formatDuration 同一個說法。
+  it("跟 formatDuration 說的是同一件事", () => {
+    const minutes = 6185;
+    const { hours } = splitDuration(minutes);
+    expect(`${hours} ${formatHeroUnit(minutes)}`).toBe(formatDuration(minutes));
   });
 });

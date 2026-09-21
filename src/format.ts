@@ -78,6 +78,21 @@ export function formatDuration(minutes: number): string {
   return `${hours} 小時 ${mins} 分鐘`;
 }
 
+/**
+ * 大字時數旁邊那一行的單位。
+ *
+ * 大字只放小時，餘數的分鐘跟在單位後面 ——「103 小時 5 分鐘」整串用 44px 排，
+ * 360px 寬的面板放不下。數字與單位因此分成兩個 span，用不了 `formatDuration`。
+ *
+ * 放這裡而不是留在元件裡，是因為它上次就是這樣被漏掉的：改成「不用小數點的
+ * 小時」時，`formatDuration` 改了，這一串還留著「分」。
+ */
+export function formatHeroUnit(minutes: number): string {
+  const { hours, mins } = splitDuration(minutes);
+  if (hours === 0) return "分鐘";
+  return mins > 0 ? `小時 ${mins} 分鐘` : "小時";
+}
+
 /** 配速差距的說法。超前用「超前」，落後用「低於」。 */
 export function formatOverPace(overPaceMinutes: number): string {
   const gap = formatDuration(Math.abs(overPaceMinutes));

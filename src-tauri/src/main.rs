@@ -114,6 +114,44 @@ fn main() {
                 })
                 .build(app)?;
 
+            // id_token 的來源：帳號頁那顆 client_id 的靜默授權。
+            //
+            // 裝在這裡而不是 `AppState::with`，是因為它需要 `AppHandle`
+            // —— webview 才拿得到逐場紀錄要的 token（spike 3a）。沒裝的話
+            // `ensure_token` 會走舊的 `client_token` 刷新，那條換不到。
+            //
+            // 就地裝好，不丟給 `spawn`：它必須早於下面那個輪詢迴圈的第一圈。
+            {
+                let handle = app.handle().clone();
+                let owner = Arc::clone(&state);
+                let renewer: gfnusage_lib::auth::refresh::Renewer = Arc::new(move || {
+                    let handle = handle.clone();
+                    let state = Arc::clone(&owner);
+                    Box::pin(async move {
+                        let device_id =
+                            gfnusage_lib::auth::window::device_id(&state.ui_state_path());
+                        // 登出會送出取消訊號，進行中的靜默續期要跟著收掉 ——
+                        // 不然它換到的那顆會蓋回剛清空的儲存區。
+                        let cancel = state.login_cancel.subscribe();
+                        let token = gfnusage_lib::auth::window::obtain_token(
+                            &handle,
+                            &state.http,
+                            &state.auth_base,
+                            &device_id,
+                            true,
+                            cancel,
+                        )
+                        .await?;
+                        // 沒有 exp 就不知道什麼時候該換，當成拿不到。
+                        let expires_at = token
+                            .expires_at
+                            .ok_or(gfnusage_lib::error::GfnError::NeedsLogin)?;
+                        Ok((token.id_token, expires_at))
+                    })
+                });
+                state.tokens.set_renewer(renewer);
+            }
+
             // 輪詢迴圈。額度只在串流時變動，5 分鐘一次已足夠；
             // 串流中的即時警示是 GFN 客戶端自己的職責。
             //

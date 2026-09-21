@@ -199,6 +199,11 @@ pub struct UiState {
     /// 主要數字顯示剩餘還是已使用。放這裡不放 `schedule.json`：它是這台
     /// 機器上的看法，不該跟著不可遊玩時段一起匯出到別台。
     pub metric: Metric,
+
+    /// 送給 NVIDIA 授權端點的裝置識別碼。第一次登入時生成。
+    ///
+    /// 和 `metric` 同一個理由放這裡：它是這台機器的身分。空字串代表還沒生過。
+    pub device_id: String,
 }
 
 pub fn ui_state_path(dir: &Path) -> PathBuf {
@@ -304,7 +309,10 @@ mod tests {
     #[test]
     fn remaining_at_without_a_history_file_is_none() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(remaining_at(&history_path(dir.path()), cutoff(40), span()), None);
+        assert_eq!(
+            remaining_at(&history_path(dir.path()), cutoff(40), span()),
+            None
+        );
     }
 
     #[test]
@@ -348,6 +356,7 @@ mod tests {
             first_run_done: true,
             tray_hint_dismissed: true,
             metric: Metric::Used,
+            device_id: "105c3409-aace-4e9b-a3dd-30260a61a188".into(),
         };
 
         save_ui_state(&path, &ui).unwrap();

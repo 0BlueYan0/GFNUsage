@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
@@ -30,79 +32,12 @@ pub struct TokenResponse {
 
 /// 授權碼換發（`grant_type=authorization_code`）的回應。
 ///
-/// **沒有 `client_token`。** 登入是兩段：這一段拿 access_token 與 id_token，
-/// 再用 access_token 去 `GET /client_token` 拿 90 天的長效憑證。
-/// 依據是 GFN 客戶端 bundle 的 `redeemAuthCode`：`idToken` 取自這個回應，
-/// 而 `clientToken` 取自另一個回應。
+/// **沒有 `client_token`。** 帳號頁那顆 client_id 要不到（scope 帶 `tk_client`
+/// 會被拒），所以換碼只有這一段，拿到的就是一小時的 id_token。
 #[derive(Deserialize)]
 pub struct AuthCodeResponse {
     pub access_token: String,
     pub id_token: String,
-}
-
-/// `GET /client_token` 的回應。
-#[derive(Deserialize)]
-pub struct ClientTokenResponse {
-    pub client_token: String,
-    /// 秒。實測 7776000，剛好 90 天 —— 客戶端把它乘以 1000 存成
-    /// `clientTokenExpiryLength`。
-    #[serde(default)]
-    pub expires_in: i64,
-}
-
-/// 取一顆 90 天的 `client_token`。這是登入的第二段。
-///
-/// 授權碼換發的回應不含 `client_token`；客戶端是先拿 access_token，
-/// 再用它當 Bearer 打這個端點（bundle 的 `getStarfleetAuthorizeHeaders`
-/// 就是 `Authorization: Bearer {access_token}`）。
-///
-/// **注意這裡要的是 access_token，不是 id_token。** 兩者搞混就拿不到
-/// 長效憑證，而那是整個 90 天免登入的唯一來源。
-pub async fn get_client_token(
-    http: &reqwest::Client,
-    auth_base: &str,
-    access_token: &str,
-) -> Result<ClientTokenResponse, GfnError> {
-    let response = http
-        .get(format!("{auth_base}/client_token"))
-        .bearer_auth(access_token)
-        .header("accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| GfnError::Network(e.to_string()))?;
-
-    let status = response.status();
-    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return Err(GfnError::RateLimited);
-    }
-    if status.is_client_error() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(if body.contains(TOO_MANY_TOKENS) {
-            GfnError::TooManyTokens
-        } else {
-            // 這是登入途中失敗，不是既有憑證被拒 —— 不要報成 NeedsLogin。
-            // 原因照樣帶出來，理由同 `post_token`。
-            GfnError::LoginFailed(format!(
-                "/client_token 回應 {status}；{}",
-                describe_oauth_error(&body)
-            ))
-        });
-    }
-    if !status.is_success() {
-        return Err(GfnError::Network(format!("/client_token 回應 {status}")));
-    }
-
-    let body = response
-        .text()
-        .await
-        .map_err(|e| GfnError::Network(e.to_string()))?;
-
-    serde_json::from_str(&body).map_err(|e| {
-        GfnError::UnexpectedResponse(format!(
-            "/client_token 的回應解析失敗：{e}；{}",
-            describe_shape(&body)
-        ))
-    })
 }
 
 /// 這次 `/token` 走的是哪一條路。
@@ -212,7 +147,18 @@ pub struct TokenManager {
     http: reqwest::Client,
     auth_base: String,
     cached: Mutex<Option<CachedToken>>,
+    renewer: OnceLock<Renewer>,
 }
+
+/// 取得一顆新 id_token 的方法。
+///
+/// 做成可插拔的，是因為現在那個方法要開 webview，而 webview 需要
+/// `AppHandle` —— 那是 `main` 才有的東西，測試裡不可能有。`main` 啟動時插進
+/// 來，測試不插，於是測試走的還是舊的 `client_token` 刷新那條路。
+///
+/// 回傳 id_token 與它的到期時刻。
+pub type Renewal = Pin<Box<dyn Future<Output = Result<(String, DateTime<Utc>), GfnError>> + Send>>;
+pub type Renewer = Arc<dyn Fn() -> Renewal + Send + Sync>;
 
 impl TokenManager {
     pub fn new(store: Arc<dyn TokenStore>, http: reqwest::Client, auth_base: String) -> Self {
@@ -221,7 +167,18 @@ impl TokenManager {
             http,
             auth_base,
             cached: Mutex::new(None),
+            renewer: OnceLock::new(),
         }
+    }
+
+    /// 裝上取得 id_token 的方法。`main` 在 `setup` 裡呼叫一次。
+    ///
+    /// 同步而不是 async，而且用 `OnceLock`：它必須在第一次輪詢之前就裝好。
+    /// 丟去 `spawn` 的話，輸掉那一圈的 `ensure_token` 會走 `None` 分支打
+    /// `/token`，多鑄一顆 access_token，而且鑄出來的是 GFN 客戶端那顆簽的，
+    /// 換不到逐場紀錄（spike 3a）。
+    pub fn set_renewer(&self, renewer: Renewer) {
+        let _ = self.renewer.set(renewer);
     }
 
     /// 回傳可用的 id_token，必要時刷新。
@@ -235,8 +192,6 @@ impl TokenManager {
             }
         }
 
-        let stored = self.store.load()?.ok_or(GfnError::NotLinked)?;
-
         // 程序剛啟動時記憶體是空的，但金鑰儲存區裡可能還有沒過期的 id_token。
         // 沿用它，才不會每次重開都向 NVIDIA 多要一顆。
         if let Some(persisted) = self.persisted_token() {
@@ -246,9 +201,55 @@ impl TokenManager {
             }
         }
 
-        let fresh = self.refresh(stored).await?;
+        let fresh = match self.renewer.get().cloned() {
+            // webview 的靜默授權。它自己就是憑證的來源，不需要
+            // `StoredSession` —— cookie 存在 webview 那邊。
+            Some(renew) => {
+                let (id_token, expires_at) = renew().await?;
+                // 寫回金鑰儲存區，程序重開沿用。同刷新那條路，寫不進去不算失敗。
+                if let Err(e) = self.store.save_id_token(&id_token) {
+                    eprintln!(
+                        "id_token（{} 字元）未能寫入金鑰儲存區，重啟後會重新取得：{e}",
+                        id_token.len()
+                    );
+                }
+                CachedToken {
+                    id_token,
+                    expires_at,
+                }
+            }
+            // `refresh` 自己寫回 id_token，這裡不必再寫一次。
+            None => {
+                let stored = self.store.load()?.ok_or(GfnError::NotLinked)?;
+                self.refresh(stored).await?
+            }
+        };
+
         *guard = Some(fresh.clone());
         Ok(fresh.id_token)
+    }
+
+    /// 收下一顆 webview 剛換到的 id_token。
+    ///
+    /// 沒有 `StoredSession` 可寫 —— 帳號頁那顆 client_id 不給 `client_token`
+    /// （spike 3a），憑證那一半在 webview 的 cookie 裡，不歸金鑰儲存區管。
+    /// 所以這裡只放 id_token，跟 `replace_credentials_with_token` 不同。
+    pub async fn adopt_token(&self, id_token: &str, expires_at: DateTime<Utc>) {
+        let mut guard = self.cached.lock().await;
+        // 舊的 `StoredSession` 一併清掉（`clear` 連 id_token 也清，所以要先做）。
+        // 留著它，面板會為一顆再也用不到的 client_token 倒數到期 ——
+        // `panel_data` 的 `client_token_expires_at` 就是從那裡來的。
+        let _ = self.store.clear();
+        if let Err(e) = self.store.save_id_token(id_token) {
+            eprintln!(
+                "id_token（{} 字元）未能寫入金鑰儲存區，重啟後會重新登入：{e}",
+                id_token.len()
+            );
+        }
+        *guard = Some(CachedToken {
+            id_token: id_token.to_string(),
+            expires_at,
+        });
     }
 
     /// 丟棄目前的 id_token，強制下次 `ensure_token` 重新取得。
@@ -370,7 +371,7 @@ impl TokenManager {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration as StdDuration;
 
@@ -641,6 +642,92 @@ mod tests {
         fn clear_id_token(&self) -> Result<(), GfnError> {
             self.inner.clear_id_token()
         }
+    }
+
+    /// 裝了 renewer 就完全不碰 `/token`。
+    ///
+    /// 這是 spike 3a 之後整條路的重點：逐場紀錄要的是帳號頁那顆 client_id
+    /// 簽的 token，`/token` 的 `client_token` 刷新換不到。真的打過去也只是
+    /// 白白多鑄一顆，往「同時有效 access_token 上限」再靠近一步。
+    #[tokio::test]
+    async fn a_renewer_replaces_the_client_token_refresh() {
+        let server = MockServer::start().await;
+        // 掛一個會 panic 的 mock：走到 `/token` 就讓測試紅。
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let store = Arc::new(MemoryStore::new());
+        let manager = TokenManager::new(store.clone(), reqwest::Client::new(), server.uri());
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let counter = calls.clone();
+        manager.set_renewer(Arc::new(move || {
+            let counter = counter.clone();
+            Box::pin(async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok((FAR_FUTURE_JWT.to_string(), Utc::now() + Duration::hours(1)))
+            })
+        }));
+
+        assert_eq!(manager.ensure_token().await.unwrap(), FAR_FUTURE_JWT);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // 第二次走記憶體快取，不該再叫一次。
+        assert_eq!(manager.ensure_token().await.unwrap(), FAR_FUTURE_JWT);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // 而且寫回了金鑰儲存區，程序重開沿用。
+        assert_eq!(
+            store.load_id_token().unwrap().as_deref(),
+            Some(FAR_FUTURE_JWT)
+        );
+    }
+
+    /// renewer 這條路不需要 `StoredSession` —— cookie 存在 webview 那邊，
+    /// 金鑰儲存區裡沒有 client_token 也該走得通。
+    #[tokio::test]
+    async fn a_renewer_does_not_need_stored_credentials() {
+        let manager = TokenManager::new(
+            Arc::new(MemoryStore::new()),
+            reqwest::Client::new(),
+            "http://127.0.0.1:1".into(),
+        );
+        manager.set_renewer(Arc::new(move || {
+            Box::pin(
+                async move { Ok((FAR_FUTURE_JWT.to_string(), Utc::now() + Duration::hours(1))) },
+            )
+        }));
+
+        assert_eq!(manager.ensure_token().await.unwrap(), FAR_FUTURE_JWT);
+    }
+
+    /// 收下 webview 那顆 token 時，舊的 `StoredSession` 要跟著走。
+    ///
+    /// 留著它，面板會為一顆再也用不到的 client_token 倒數到期，而那顆
+    /// 憑證從升級的那一刻起就不會再被刷新了。
+    #[tokio::test]
+    async fn adopting_a_token_drops_the_credential_it_replaces() {
+        let store = seeded_store();
+        let manager = TokenManager::new(
+            store.clone(),
+            reqwest::Client::new(),
+            "http://127.0.0.1:1".into(),
+        );
+
+        manager
+            .adopt_token(FAR_FUTURE_JWT, Utc::now() + Duration::hours(1))
+            .await;
+
+        assert_eq!(store.load().unwrap(), None);
+        assert_eq!(
+            store.load_id_token().unwrap().as_deref(),
+            Some(FAR_FUTURE_JWT)
+        );
+        assert_eq!(manager.ensure_token().await.unwrap(), FAR_FUTURE_JWT);
     }
 
     #[tokio::test]
