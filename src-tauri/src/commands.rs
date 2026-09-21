@@ -792,6 +792,74 @@ mod tests {
         _settings: tempfile::TempDir,
     }
 
+    /// 只要一個有設定目錄的 `AppState`，不要 mock server。
+    ///
+    /// `undismissed_update` 只讀 `ui-state.json`，開一台 wiremock 只是
+    /// 多一個會壞的東西。
+    fn settings_only() -> (Arc<AppState>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState::with(
+            Arc::new(MemoryStore::new()),
+            reqwest::Client::new(),
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            dir.path().to_path_buf(),
+        ));
+        (state, dir)
+    }
+
+    fn dismiss(state: &AppState, version: &str) {
+        let path = state.ui_state_path();
+        let mut ui = store::load_ui_state(&path);
+        ui.update_dismissed = version.into();
+        store::save_ui_state(&path, &ui).unwrap();
+    }
+
+    #[test]
+    fn nothing_found_means_no_banner() {
+        let (state, _dir) = settings_only();
+
+        assert_eq!(
+            undismissed_update(&state, &crate::update::UpdateState::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_found_version_reaches_the_panel() {
+        let (state, _dir) = settings_only();
+
+        assert_eq!(
+            undismissed_update(&state, &crate::update::UpdateState::found("0.1.1")),
+            Some("0.1.1".to_string())
+        );
+    }
+
+    #[test]
+    fn a_dismissed_version_stays_dismissed() {
+        let (state, _dir) = settings_only();
+        dismiss(&state, "0.1.1");
+
+        assert_eq!(
+            undismissed_update(&state, &crate::update::UpdateState::found("0.1.1")),
+            None
+        );
+    }
+
+    /// 關掉的是「0.1.1 出來了」這句話。下一版出來還是要講 —— 記布林的話
+    /// 使用者關過一次就再也收不到更新。
+    #[test]
+    fn the_next_version_is_announced_again() {
+        let (state, _dir) = settings_only();
+        dismiss(&state, "0.1.1");
+
+        assert_eq!(
+            undismissed_update(&state, &crate::update::UpdateState::found("0.1.2")),
+            Some("0.1.2".to_string())
+        );
+    }
+
     async fn harness(linked: bool) -> Harness {
         let server = MockServer::start().await;
         let store = Arc::new(MemoryStore::new());

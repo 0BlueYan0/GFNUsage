@@ -163,4 +163,58 @@ describe("Banners", () => {
 
     expect(screen.getByText(/登入已過期/)).toBeTruthy();
   });
+
+  it("有新版本時畫一條橫幅", () => {
+    render(
+      <Banners
+        clientTokenExpiresAt={null}
+        showTrayHint={false}
+        updateVersion="0.1.1"
+        busy={false}
+        onDismissHint={vi.fn()}
+        onInstallUpdate={vi.fn()}
+        onDismissUpdate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("有新版本 0.1.1")).toBeTruthy();
+  });
+
+  it("更新與知道了各叫各的", () => {
+    const onInstallUpdate = vi.fn();
+    const onDismissUpdate = vi.fn();
+    render(
+      <Banners
+        clientTokenExpiresAt={null}
+        showTrayHint={false}
+        updateVersion="0.1.1"
+        busy={false}
+        onDismissHint={vi.fn()}
+        onInstallUpdate={onInstallUpdate}
+        onDismissUpdate={onDismissUpdate}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "更新" }));
+    fireEvent.click(screen.getByRole("button", { name: "知道了" }));
+
+    expect(onInstallUpdate).toHaveBeenCalledTimes(1);
+    expect(onDismissUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  /// 登入畫面不談更新，`App` 那邊傳的就是 null。
+  it("沒有新版本就不畫", () => {
+    render(
+      <Banners
+        clientTokenExpiresAt={null}
+        showTrayHint={false}
+        updateVersion={null}
+        busy={false}
+        onDismissHint={vi.fn()}
+        onInstallUpdate={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(/有新版本/)).toBeNull();
+  });
 });

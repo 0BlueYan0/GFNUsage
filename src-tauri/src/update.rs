@@ -4,11 +4,13 @@
 //! 數量」那個上限的帳。查不到就等下一圈，不重試（spec §9）。
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_updater::{Update, UpdaterExt};
+
+use crate::AppState;
 
 /// 啟動後隔這麼久才做第一次檢查。
 ///
@@ -103,7 +105,49 @@ pub async fn install<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
             *state.pending.lock().unwrap() = Some(pending);
             state.installing.store(false, Ordering::SeqCst);
             log::warn!("{version} 安裝失敗：{e}");
-            Err(format!("更新安裝失敗：{e}"))
+
+            // 寫進面板的錯誤格，不是只回傳。系統匣那條路是
+            // `let _ = install(...)`，面板那條走 `runQuietly` 也會吞掉回傳值
+            // —— 兩邊都靠這一行，不寫的話使用者按下去只看到按鈕彈回來。
+            //
+            // await 已經結束，這裡拿鎖不跨 await。
+            let message = format!("更新安裝失敗：{e}");
+            let app_state = app.state::<Arc<AppState>>().inner().clone();
+            *app_state.last_error.lock().unwrap() = Some(message.clone());
+            crate::tray::sync(&app, &app_state);
+            Err(message)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl UpdateState {
+        /// 測試用：直接擺一個查到的版本進去。
+        ///
+        /// `pending` 留空 —— 那要一個真的 `Update`，而它只能從
+        /// `updater.check()` 拿。這裡測的是「要不要講」，不是「怎麼裝」。
+        pub fn found(version: &str) -> Self {
+            let state = Self::default();
+            *state.version.lock().unwrap() = Some(version.into());
+            state
+        }
+    }
+
+    #[test]
+    fn a_fresh_state_has_nothing_to_announce() {
+        let state = UpdateState::default();
+
+        assert_eq!(state.available(), None);
+        assert!(!state.installing());
+    }
+
+    #[test]
+    fn a_found_version_is_available() {
+        let state = UpdateState::found("0.1.1");
+
+        assert_eq!(state.available().as_deref(), Some("0.1.1"));
     }
 }
