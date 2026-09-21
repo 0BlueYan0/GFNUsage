@@ -5,18 +5,15 @@ system tray or the macOS menu bar.
 
 [繁體中文說明](README.zh-TW.md)
 
-> **Status:** milestone 3 is done, which completes the v1 feature set on
-> Windows. GFNUsage signs in with your NVIDIA account over a localhost
-> loopback — or imports credentials from a machine that already has the
-> GeForce NOW client — refreshes them on its own, and shows the remaining
-> hours in the tray alongside a pace threshold, an overrun projection and
-> the blackout windows you set up in the panel. Settings export and
-> import, a snapshot history and a warning before the credential expires
-> landed here too.
+> **Status:** the v1 feature set is done on Windows. GFNUsage signs in with
+> your NVIDIA account in a webview, keeps the session alive on its own, and
+> shows the remaining hours in the tray alongside a pace threshold, an
+> overrun projection, your per-session play history and the blackout
+> windows you set up in the panel.
 >
 > **macOS is untested.** The sign-in flow exists precisely so a Mac can
-> get credentials without the GFN client, but the development machine is
-> a Windows box and nobody has run it on a Mac yet.
+> get its own session, but the development machine is a Windows box and
+> nobody has run it on a Mac yet.
 
 ## Why
 
@@ -42,13 +39,45 @@ burning through it too fast.
   the available time left in the period
 - ✅ **Rollover waste warning** — how many hours you are on track to leave
   unused, and how many of those will expire past the 15-hour cap
-- ✅ **Sign in with your NVIDIA account** — a localhost loopback OAuth
-  flow, so a machine without the GeForce NOW client can get credentials
-  on its own
+- ✅ **Sign in with your NVIDIA account** — OAuth in a webview, so a
+  machine without the GeForce NOW client can get its own session
+- ✅ **Recent sessions** — each game you played, when, and for how long
 - ✅ **Settings export and import** — move one set of blackout windows
   between machines as a JSON file
-- ✅ **Credential expiry warning** — the refresh token lasts 90 days;
-  the panel says so a week before it runs out
+
+## Install
+
+Download the latest `GFNUsage_<version>_x64-setup.exe` from
+[Releases](https://github.com/0BlueYan0/GFNUsage/releases) and run it.
+
+It installs into your user folder, so Windows will not ask for
+administrator rights. There is no code signing certificate behind this
+build, so SmartScreen will say "Windows protected your PC" and name an
+unknown publisher: choose **More info** → **Run anyway**.
+
+The app checks for new versions and tells you when one is out. Nothing
+installs until you click it.
+
+**macOS is not guaranteed to work.** The `.dmg` is built by CI but nobody
+has run it. It is neither signed nor notarised, so Gatekeeper blocks it on
+first launch — right-click the app and choose **Open**, or allow it under
+**System Settings → Privacy & Security**.
+
+Uninstalling leaves three things behind, by design, so a reinstall picks up
+where you left off: `%APPDATA%\tw.iosclub.gfnusage\`,
+`%LOCALAPPDATA%\tw.iosclub.gfnusage\`, and the `GFNUsage` entries in
+Windows Credential Manager.
+
+## Build from source
+
+Needs Node 22, a stable Rust toolchain, and the WebView2 runtime (Windows
+11 has it already).
+
+```
+npm ci
+npm run tauri dev      # run it, against the real NVIDIA API
+npm run tauri build    # produce the installer
+```
 
 ## How it works
 
@@ -56,10 +85,11 @@ GFNUsage reads the remaining time from your NVIDIA account rather than
 counting seconds on the local machine, so the figure stays correct when
 you play across several computers.
 
-Credentials come from one of two places: an OAuth login over a localhost
-loopback, or an import from a machine that already has the GeForce NOW
-client installed. They live in the operating system's credential store —
-Windows Credential Manager or the macOS Keychain — never in a plain file.
+You sign in once, in a webview. What GFNUsage keeps is a one-hour token,
+stored in the operating system's credential store — Windows Credential
+Manager or the macOS Keychain — never in a plain file. When it expires the
+app renews it in the background, without asking you again, for as long as
+the webview's cookie lasts.
 
 ## Disclaimer
 
