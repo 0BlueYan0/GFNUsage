@@ -13,6 +13,14 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 use crate::AppState;
 
+/// 一次請求最多等這麼久。
+///
+/// 外掛預設是沒有上限（`timeout: None`）。使用者機器上的系統 proxy 可能只是
+/// 「有時候連得上」—— 實測一台裝了本機 proxy 的機器，同一個網址連跑三次有
+/// 兩次連不完成，一次檢查卡了 1 分 52 秒才回來，而那段時間關於頁停在
+/// 「檢查中…」。
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
+
 /// 啟動後隔這麼久才做第一次檢查。
 ///
 /// 剛開機網路多半還沒好，而且第一輪額度輪詢才是使用者盯著的東西，
@@ -66,24 +74,54 @@ pub enum CheckResult {
     Failed(String),
 }
 
+/// 查一次，`direct` 為真時繞過系統 proxy。
+///
+/// reqwest 預設會去讀 Windows 的 `Internet Settings`（`ProxyEnable`／
+/// `ProxyServer`），所以這支程式的每一個 HTTP 請求都跟著系統 proxy 走。
+/// 那顆 proxy 是使用者裝的，好不好用不歸這裡管。
+async fn check_with<R: Runtime>(
+    app: &AppHandle<R>,
+    direct: bool,
+) -> Result<Option<Update>, String> {
+    let mut builder = app.updater_builder().timeout(REQUEST_TIMEOUT);
+    if direct {
+        builder = builder.no_proxy();
+    }
+    let updater = builder
+        .build()
+        .map_err(|e| format!("更新檢查建不起來：{e}"))?;
+    updater
+        .check()
+        .await
+        .map_err(|e| format!("更新檢查失敗：{e}"))
+}
+
 /// 查一次。
 ///
 /// 背景那條迴圈把回傳值丟掉，關於頁的「檢查更新」則把它畫出來。
+///
+/// 先照系統設定走，不通才直連再試一次。兩條都要試：有人是非得過 proxy 才
+/// 出得去，也有人的 proxy 只是偶爾通，而 GitHub 直連是好的。
+///
+/// 這不是 spec §9 決定不做的那種退避重試 —— 沒有等待、沒有第二次同樣的請求，
+/// 是換一條路徑，而且這條路只打 GitHub，不碰 NVIDIA，不進 token 上限的帳。
+/// 成功的那一邊建出來的 `Update` 帶著自己的 proxy 設定，待會下載會走同一條。
 pub async fn check_once<R: Runtime>(app: &AppHandle<R>) -> CheckResult {
-    let updater = match app.updater() {
-        Ok(updater) => updater,
-        Err(e) => {
-            log::warn!("更新檢查建不起來：{e}");
-            return CheckResult::Failed(format!("更新檢查建不起來：{e}"));
+    let found = match check_with(app, false).await {
+        Ok(found) => found,
+        Err(proxied) => {
+            log::warn!("{proxied}（照系統 proxy 設定）。改直連再試一次");
+            match check_with(app, true).await {
+                Ok(found) => found,
+                Err(e) => {
+                    log::warn!("{e}（直連）");
+                    return CheckResult::Failed(format!("{e}（系統 proxy 與直連都不通）"));
+                }
+            }
         }
     };
-    let found = match updater.check().await {
-        Ok(Some(found)) => found,
-        Ok(None) => return CheckResult::UpToDate,
-        Err(e) => {
-            log::warn!("更新檢查失敗：{e}");
-            return CheckResult::Failed(format!("更新檢查失敗：{e}"));
-        }
+    let Some(found) = found else {
+        return CheckResult::UpToDate;
     };
 
     // await 結束之後才碰鎖。
