@@ -2,7 +2,9 @@
 name = "gfnusage"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.77"
+# 1.77.2 是 tauri-plugin-{updater,log,single-instance,autostart} 的下限，
+# 不是我們自己的需求。壓在 1.77 的話 cargo 會退回去抓那幾個外掛的 rc 版。
+rust-version = "1.77.2"
 
 [lib]
 name = "gfnusage_lib"
@@ -33,6 +35,10 @@ sha2 = "0.10"
 getrandom = "0.3"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-log = "2"
+tauri-plugin-autostart = "2"
+log = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

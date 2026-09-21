@@ -23,7 +23,23 @@ const TICK: Duration = Duration::from_secs(30);
 const REOPEN_GRACE: Duration = Duration::from_millis(300);
 
 fn main() {
+    gfnusage_lib::logging::log_panics();
+
     tauri::Builder::default()
+        // 必須排在所有外掛的最前面（官方文件明講）。第二份程序唯一的職責是把
+        // 既有的面板叫出來 —— 使用者會再點一次圖示，多半是因為 Windows 11 把
+        // 圖示收進溢位區，他根本看不到它已經在跑了。兩份程序同時活著就是兩個
+        // 輪詢迴圈、兩條 `ensure_token` 路徑，直接撞 NVIDIA 那個未公開的
+        // 同時有效 token 數量上限，撞到就是一小時內誰都換不到新的。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            panel::show_default(app);
+        }))
+        // 排第二：後面每一個外掛的初始化錯誤都要寫得進日誌。
+        .plugin(gfnusage_lib::logging::plugin())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {

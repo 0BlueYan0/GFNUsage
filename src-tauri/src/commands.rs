@@ -435,7 +435,7 @@ pub async fn sign_out(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result
     // 瀏覽資料是整個 app 共用的，從面板那個視窗清就涵蓋登入視窗。
     if let Some(window) = app.get_webview_window(panel::PANEL_LABEL) {
         if let Err(e) = window.clear_all_browsing_data() {
-            eprintln!("webview 瀏覽資料清不掉，可能還是登入狀態：{e}");
+            log::warn!("webview 瀏覽資料清不掉，可能還是登入狀態：{e}");
         }
     }
 
@@ -563,7 +563,8 @@ fn record_history(state: &AppState, snapshot: &QuotaSnapshot) {
     if let Err(message) =
         store::append_history(&state.history_path(), &SnapshotRow::from_snapshot(snapshot))
     {
-        eprintln!("{message}");
+        // 寫不進去的話「今天用了多少」就沒有基準點可以減，不只是少一行紀錄。
+        log::error!("{message}");
     }
 }
 
@@ -629,7 +630,7 @@ async fn fetch_sessions(state: &AppState, id_token: &str, span_start: Option<Dat
     *state.sessions.lock().unwrap() = match fetched {
         Ok(sessions) => Some(sessions),
         Err(e) => {
-            eprintln!("逐場遊玩紀錄抓不到，今日額度改用快照歷史：{e}");
+            log::warn!("逐場遊玩紀錄抓不到，今日額度改用快照歷史：{e}");
             None
         }
     };
@@ -646,7 +647,9 @@ pub async fn refresh_state(state: &AppState) -> Result<QuotaSnapshot, String> {
             record_history(state, &snapshot);
             *state.snapshot.lock().unwrap() = Some(snapshot.clone());
             *state.last_error.lock().unwrap() = None;
-            state.needs_login.store(false, Ordering::SeqCst);
+            if state.needs_login.swap(false, Ordering::SeqCst) {
+                log::info!("重新登入完成，輪詢恢復");
+            }
             Ok(snapshot)
         }
         Err(GfnError::NotLinked) => Err(GfnError::NotLinked.to_string()),
@@ -654,8 +657,15 @@ pub async fn refresh_state(state: &AppState) -> Result<QuotaSnapshot, String> {
         Err(GfnError::LoginCancelled) => Err(GfnError::LoginCancelled.to_string()),
         Err(e) => {
             if matches!(e, GfnError::NeedsLogin) {
-                state.needs_login.store(true, Ordering::SeqCst);
+                // 從沒事變成要重新登入，是使用者唯一非動手不可的狀態轉換。
+                // 只記第一次翻轉，之後每五分鐘都會走到這裡。
+                if !state.needs_login.swap(true, Ordering::SeqCst) {
+                    log::warn!("既有登入被拒絕，輪詢暫停到重新登入為止");
+                }
             }
+            // `GfnError` 的 Display 全是固定字串加 `describe_shape()` 的輸出，
+            // 只有欄位名稱與長度，沒有值（spec §9）。
+            log::warn!("更新失敗：{e}");
             Err(record_error(state, e.to_string()))
         }
     }

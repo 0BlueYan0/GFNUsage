@@ -208,7 +208,7 @@ impl TokenManager {
                 let (id_token, expires_at) = renew().await?;
                 // 寫回金鑰儲存區，程序重開沿用。同刷新那條路，寫不進去不算失敗。
                 if let Err(e) = self.store.save_id_token(&id_token) {
-                    eprintln!(
+                    log::warn!(
                         "id_token（{} 字元）未能寫入金鑰儲存區，重啟後會重新取得：{e}",
                         id_token.len()
                     );
@@ -241,7 +241,7 @@ impl TokenManager {
         // `panel_data` 的 `client_token_expires_at` 就是從那裡來的。
         let _ = self.store.clear();
         if let Err(e) = self.store.save_id_token(id_token) {
-            eprintln!(
+            log::warn!(
                 "id_token（{} 字元）未能寫入金鑰儲存區，重啟後會重新登入：{e}",
                 id_token.len()
             );
@@ -295,7 +295,7 @@ impl TokenManager {
         // 和刷新那裡同樣的取捨：id_token 只是快取，寫不進去不算失敗。
         // 只記長度，不記內容。
         if let Err(e) = self.store.save_id_token(id_token) {
-            eprintln!(
+            log::warn!(
                 "id_token（{} 字元）未能寫入金鑰儲存區，重啟後會重新取得：{e}",
                 id_token.len()
             );
@@ -346,7 +346,7 @@ impl TokenManager {
         // id_token 只是重啟後的快取，寫不進去不能讓刷新失敗 —— 憑證已經輪替了，
         // 這裡失敗就等於把使用者鎖在外面。只記長度，不記內容。
         if let Err(e) = self.store.save_id_token(&body.id_token) {
-            eprintln!(
+            log::warn!(
                 "id_token（{} 字元）未能寫入金鑰儲存區，重啟後會重新取得：{e}",
                 body.id_token.len()
             );

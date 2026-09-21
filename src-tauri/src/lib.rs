@@ -2,6 +2,7 @@ pub mod api;
 pub mod auth;
 pub mod commands;
 pub mod error;
+pub mod logging;
 pub mod pace;
 pub mod panel;
 pub mod quota;
