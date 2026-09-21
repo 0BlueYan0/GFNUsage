@@ -93,19 +93,45 @@ jobs:
           # 不必再把 action 自己那套版本偵測牽進來。
           tagName: ${{ needs.guard.outputs.tag }}
           releaseName: GFNUsage ${{ needs.guard.outputs.tag }}
+          # 英文在前，中文在後，各自一整段。下載的人不一定讀中文，
+          # 而 GitHub 的 release 頁沒有語言切換。
           releaseBody: |
-            ## Windows
+            ## English
 
-            下載 `GFNUsage_${{ needs.guard.outputs.version }}_x64-setup.exe`。
+            ### Windows
+
+            Download `GFNUsage_${{ needs.guard.outputs.version }}_x64-setup.exe`
+            and run it.
+
+            There is no code signing certificate behind this build, so
+            SmartScreen will say "Windows protected your PC" and name an
+            unknown publisher: choose **More info** → **Run anyway**. It
+            installs into your user folder and never asks for administrator
+            rights.
+
+            ### macOS
+
+            Unsigned, unnotarised, and never run by anyone. Gatekeeper blocks
+            it on first launch — right-click the app and choose **Open**, or
+            allow it under **System Settings → Privacy & Security**.
+
+            ---
+
+            ## 繁體中文
+
+            ### Windows
+
+            下載 `GFNUsage_${{ needs.guard.outputs.version }}_x64-setup.exe`
+            執行。
 
             這個專案沒有買程式碼簽章憑證，SmartScreen 會跳「已保護您的電腦」
-            並顯示不明的發行者，按**其他資訊** → **仍要執行**。
-            裝在使用者資料夾，不需要系統管理員權限。
+            並顯示不明的發行者，按**其他資訊** → **仍要執行**。裝在使用者
+            資料夾，不需要系統管理員權限。
 
-            ## macOS
+            ### macOS
 
-            未簽章也未公證，而且沒有人實測過。第一次開啟要在 app 上按右鍵選
-            **打開**，或到**系統設定 → 隱私權與安全性**放行。
+            未簽章也未公證，而且沒有人跑過。Gatekeeper 第一次會擋下來——在
+            app 上按右鍵選**打開**，或到**系統設定 → 隱私權與安全性**放行。
           # 草稿。人工確認過再按發佈 —— 按下去那一刻使用者才收得到更新。
           releaseDraft: true
           prerelease: false
