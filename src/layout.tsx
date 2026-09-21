@@ -9,7 +9,7 @@
  *   npm run dev   →  http://localhost:1420/layout.html
  */
 import { createRoot } from "react-dom/client";
-import type { PanelData } from "./types";
+import type { PanelData, Schedule } from "./types";
 
 function session(startedAt: string, gameTitle: string, minutes: number) {
   return { gameTitle, startedAt, endedAt: null, minutes };
@@ -72,16 +72,31 @@ const DATA: PanelData = {
   updateVersion: "0.1.1",
 };
 
+/// 設定頁最擠的情況：時段多到要捲，才看得出標題有沒有釘住。
+const SCHEDULE: Schedule = {
+  weekly: Array.from({ length: 6 }, (_, i) => ({
+    weekdays: [i % 7, (i + 3) % 7],
+    startMinute: 60 * i,
+    endMinute: 60 * i + 420,
+    note: `時段 ${i + 1}`,
+  })),
+  exceptions: [
+    { startDate: "2026-10-01", endDate: "2026-10-05", kind: "blocked", note: "出差" },
+    { startDate: "2026-10-10", endDate: "2026-10-12", kind: "free", note: "連假" },
+  ],
+};
+
 // `invoke` 走 `window.__TAURI_INTERNALS__`，在瀏覽器裡沒有這個物件。
 // 先補上再載入 `App` —— import 會被提升，所以用動態 import。
-/// `?screen=signin` 看登入畫面，`?screen=about` 看關於頁，不帶參數看主面板。
-/// 三個畫面的容器不一樣（`.panel--scroll` 對 `.panel`），改版面都要看。
-const SIGN_IN = new URLSearchParams(location.search).get("screen") === "signin";
+/// `?screen=` 不帶參數看主面板，`signin` 登入畫面，`about` 關於頁，
+/// `settings` 設定頁，`sessions` 最近。容器不一樣（`.panel--scroll` 對
+/// `.panel`），改版面每一個都要看。
+const SCREEN = new URLSearchParams(location.search).get("screen") ?? "";
 
 (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
   invoke: async (command: string) => {
     if (command === "get_snapshot") {
-      return SIGN_IN
+      return SCREEN === "signin"
         ? { ...DATA, snapshot: null, pace: null, hasCredentials: false, recentSessions: [] }
         : DATA;
     }
@@ -91,10 +106,34 @@ const SIGN_IN = new URLSearchParams(location.search).get("screen") === "signin";
       return { version: "0.1.1", installing: false };
     }
     if (command === "get_autostart") return false;
+    if (command === "get_schedule") return SCHEDULE;
     return null;
   },
   transformCallback: (callback: unknown) => callback,
 };
 
+/// 從 `.actions` 把那一頁按開。
+///
+/// `App` 的畫面切換是它自己的 state，沒有外部入口，而為了這一頁在正式程式碼
+/// 上開一個 prop 不划算。按鈕要等 `get_snapshot` 回來才畫得出來，所以等到
+/// 它出現為止。
+function openScreen(label: string) {
+  const tick = () => {
+    const button = [
+      ...document.querySelectorAll<HTMLButtonElement>(".actions button"),
+    ].find((candidate) => candidate.textContent?.trim() === label);
+    if (button) button.click();
+    else requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
 const { default: App } = await import("./App");
 createRoot(document.getElementById("root")!).render(<App />);
+
+const ENTRY: Record<string, string> = {
+  about: "關於",
+  settings: "設定",
+  sessions: "最近",
+};
+if (ENTRY[SCREEN]) openScreen(ENTRY[SCREEN]);
