@@ -9,6 +9,7 @@ function props(overrides: Partial<Parameters<typeof About>[0]> = {}) {
     installing: false,
     autostart: false,
     busy: false,
+    note: null,
     error: null,
     onClose: () => {},
     onCheckUpdate: () => {},
@@ -77,6 +78,13 @@ describe("About", () => {
     render(<About {...props({ autostart: null })} />);
 
     expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  /// 查完沒有新版本時什麼都不寫的話，跟「端點壞了」在畫面上一模一樣。
+  it("查完沒有新版本要講一聲", () => {
+    render(<About {...props({ note: "已是最新版本" })} />);
+
+    expect(screen.getByText("已是最新版本")).toBeTruthy();
   });
 
   it("錯誤留在這一頁", () => {

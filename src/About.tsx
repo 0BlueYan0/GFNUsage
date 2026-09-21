@@ -12,6 +12,7 @@ export default function About({
   installing,
   autostart,
   busy,
+  note,
   error,
   onClose,
   onCheckUpdate,
@@ -25,6 +26,9 @@ export default function About({
   /// 做了決定。
   autostart: boolean | null;
   busy: boolean;
+  /// 查完但沒有新版本時的那一句。找到新版本的話按鈕自己會變成
+  /// 「更新到 x.y.z」，那就是回饋，不必再寫一句。
+  note: string | null;
   error: string | null;
   onClose: () => void;
   onCheckUpdate: () => void;
@@ -74,6 +78,8 @@ export default function About({
           開機時自動啟動
         </label>
       )}
+
+      {note && <p className="note">{note}</p>}
 
       {error && <p className="alert">{error}</p>}
     </div>

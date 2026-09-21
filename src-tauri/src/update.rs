@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
@@ -49,21 +50,39 @@ impl UpdateState {
     }
 }
 
-/// 查一次。查不到、網路不通、端點壞掉，一律安靜結束。
-pub async fn check_once<R: Runtime>(app: &AppHandle<R>) {
+/// 一次檢查的結果。
+///
+/// 三種都要傳得回前端。只記日誌的話「已是最新」和「端點壞掉」在畫面上
+/// 長得一模一樣 —— 而這整套機制（latest.json 的網址、公鑰與私鑰配不配得
+/// 起來、草稿發佈後資產能不能公開下載）沒有人跑過，它失敗時得看得出來。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "value")]
+pub enum CheckResult {
+    /// 查到新版本。
+    Found(String),
+    /// 已經是最新的。
+    UpToDate,
+    /// 沒查成：網路不通、端點壞掉、簽章對不上。字串直接給使用者看。
+    Failed(String),
+}
+
+/// 查一次。
+///
+/// 背景那條迴圈把回傳值丟掉，關於頁的「檢查更新」則把它畫出來。
+pub async fn check_once<R: Runtime>(app: &AppHandle<R>) -> CheckResult {
     let updater = match app.updater() {
         Ok(updater) => updater,
         Err(e) => {
             log::warn!("更新檢查建不起來：{e}");
-            return;
+            return CheckResult::Failed(format!("更新檢查建不起來：{e}"));
         }
     };
     let found = match updater.check().await {
         Ok(Some(found)) => found,
-        Ok(None) => return,
+        Ok(None) => return CheckResult::UpToDate,
         Err(e) => {
             log::warn!("更新檢查失敗：{e}");
-            return;
+            return CheckResult::Failed(format!("更新檢查失敗：{e}"));
         }
     };
 
@@ -78,10 +97,22 @@ pub async fn check_once<R: Runtime>(app: &AppHandle<R>) {
     if let Err(e) = crate::tray::menu::rebuild(app, Some(&version)) {
         log::warn!("系統匣選單更新不了：{e}");
     }
+    CheckResult::Found(version)
 }
 
-/// 下載並安裝。成功的話這個函式不會回來 —— updater 裝完會結束程序。
+/// 下載並安裝。
+///
+/// Windows 走不回來：NSIS 那條的結尾是 `std::process::exit(0)`。macOS 換完
+/// bundle 就回傳，要自己重新啟動才會跑到新的程式碼。
 pub async fn install<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    // 安裝結尾會結束程序。在 `tauri dev` 底下那是殺掉開發中的程式去裝正式版
+    // —— 而開發樹的版本號比最新的 release 舊時（舊 checkout）真的查得到更新。
+    // 背景檢查在 debug 本來就不排（`main.rs`），擋不到的是關於頁與系統匣
+    // 那兩顆按鈕，所以閘門放在這裡。
+    if cfg!(debug_assertions) {
+        return Err("開發建構不安裝更新".into());
+    }
+
     let state = app.state::<UpdateState>();
     if state.installing.swap(true, Ordering::SeqCst) {
         // 已經在裝了。第二次按當成沒按，不是錯誤。
@@ -98,7 +129,15 @@ pub async fn install<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let version = pending.version.clone();
     log::info!("開始安裝 {version}");
     match pending.download_and_install(|_, _| {}, || {}).await {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            // Windows 到不了這裡。macOS 會：換好的是磁碟上的 bundle，記憶體裡
+            // 跑的還是舊的程式碼。不重設旗標的話關於頁永遠停在「更新安裝中」，
+            // 而 `pending` 已經被 take 走，系統匣那行再按一次會在上面的 swap
+            // 直接 return，按下去沒反應。
+            state.installing.store(false, Ordering::SeqCst);
+            log::info!("{version} 安裝完成，重新啟動");
+            app.restart();
+        }
         Err(e) => {
             // `download_and_install` 收 `&self`，所以 `pending` 還在手上。
             // 放回去，讓使用者能再按一次，不必等下一個檢查週期。
@@ -149,5 +188,22 @@ mod tests {
         let state = UpdateState::found("0.1.1");
 
         assert_eq!(state.available().as_deref(), Some("0.1.1"));
+    }
+
+    /// 前端靠 `kind` 分三種結果。改了這個形狀，關於頁就分不出
+    /// 「已是最新」和「端點壞掉」，而那正是這個 enum 存在的理由。
+    #[test]
+    fn the_three_results_reach_the_panel_apart() {
+        let json = |r: &CheckResult| serde_json::to_string(r).unwrap();
+
+        assert_eq!(
+            json(&CheckResult::Found("0.1.1".into())),
+            r#"{"kind":"found","value":"0.1.1"}"#
+        );
+        assert_eq!(json(&CheckResult::UpToDate), r#"{"kind":"upToDate"}"#);
+        assert_eq!(
+            json(&CheckResult::Failed("端點壞了".into())),
+            r#"{"kind":"failed","value":"端點壞了"}"#
+        );
     }
 }

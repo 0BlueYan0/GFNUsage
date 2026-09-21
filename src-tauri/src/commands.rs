@@ -18,7 +18,7 @@ use crate::panel;
 use crate::quota::{DisplayState, QuotaSnapshot};
 use crate::store::{self, SnapshotRow};
 use crate::tray;
-use crate::update::UpdateState;
+use crate::update::{CheckResult, UpdateState};
 use crate::AppState;
 use tauri_plugin_autostart::ManagerExt;
 
@@ -99,10 +99,11 @@ pub fn get_update_status(update: State<'_, UpdateState>) -> UpdateStatus {
     }
 }
 
-/// 使用者按的檢查。和背景那條走同一個函式，只是不必等下一個週期。
+/// 使用者按的檢查。和背景那條走同一個函式，只是不必等下一個週期，
+/// 而且結果會傳回去 —— 背景那條沒有人在看，這條有。
 #[tauri::command]
-pub async fn check_update_now(app: AppHandle) {
-    crate::update::check_once(&app).await;
+pub async fn check_update_now(app: AppHandle) -> CheckResult {
+    crate::update::check_once(&app).await
 }
 
 #[tauri::command]

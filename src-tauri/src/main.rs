@@ -49,6 +49,12 @@ fn main() {
                 .map_err(|e| format!("找不到設定目錄：{e}"))?;
             let state = Arc::new(AppState::new(settings_dir));
             app.manage(state.clone());
+            // 和 `AppState` 放在一起，不要挪到下面。`setup` 是在 config 裡的
+            // 視窗建好之後才跑的，webview 那時已經開始載入 —— `get_snapshot`
+            // 的簽章要 `State<UpdateState>`，沒 manage 就是 `expect` panic。
+            // 現在打不到（事件迴圈還沒開始，IPC 送不進來），但只要有人在底下
+            // 加一個會 pump 訊息的呼叫就會變成真的。
+            app.manage(gfnusage_lib::update::UpdateState::default());
 
             // 首次啟動主動把面板叫出來一次。
             //
@@ -95,8 +101,6 @@ fn main() {
                     _ => {}
                 });
             }
-
-            app.manage(gfnusage_lib::update::UpdateState::default());
 
             let menu = tray::menu::build(app.handle(), None)?;
 
@@ -238,9 +242,9 @@ fn main() {
             // 要不要發網路請求的判斷會變成每半分鐘一次；更要緊的是，檢查失敗
             // 若走 `refresh_into_state` 的錯誤路徑，會蓋掉面板上額度的錯誤。
             //
-            // debug 建構不查。開發中的版本號跟正式版一樣，`tauri dev` 會發現
-            // 「有新版」，而安裝結尾是 `std::process::exit(0)` —— 那會直接殺掉
-            // 開發中的程序去裝正式版。
+            // debug 建構不排這條：開發中每天對 GitHub 發一次請求沒有意義。
+            // 「按下去會不會真的裝」那道閘門在 `update::install` 裡，所以關於頁
+            // 的「檢查更新」在 `tauri dev` 仍然按得到，正好拿來驗端點通不通。
             #[cfg(not(debug_assertions))]
             {
                 let handle = app.handle().clone();

@@ -137,6 +137,12 @@ interface AboutData {
   autostart: boolean | null;
 }
 
+/** `update::CheckResult` 的另一半。三種結果在畫面上是三件事。 */
+type CheckResult =
+  | { kind: "found"; value: string }
+  | { kind: "upToDate" }
+  | { kind: "failed"; value: string };
+
 export default function App() {
   const [data, setData] = useState<PanelData | null>(null);
   const [busy, setBusy] = useState(false);
@@ -154,6 +160,8 @@ export default function App() {
   // 沒必要每次開面板都去問。
   const [about, setAbout] = useState<AboutData | null>(null);
   const [aboutError, setAboutError] = useState<string | null>(null);
+  // 查完但沒有新版本時要講的那一句。查到的話按鈕自己會變。
+  const [aboutNote, setAboutNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setData(await invoke<PanelData>("get_snapshot"));
@@ -217,6 +225,7 @@ export default function App() {
 
   const openAbout = async () => {
     setAboutError(null);
+    setAboutNote(null);
     setAbout(await loadAbout());
   };
 
@@ -227,6 +236,7 @@ export default function App() {
   const runAbout = async (task: () => Promise<unknown>) => {
     setBusy(true);
     setAboutError(null);
+    setAboutNote(null);
     try {
       await task();
     } catch (reason) {
@@ -236,6 +246,19 @@ export default function App() {
       setBusy(false);
     }
   };
+
+  /**
+   * 手動檢查更新。
+   *
+   * 後端不再把結果吞掉：查不到和查失敗在畫面上要是兩件事。查到的話什麼都
+   * 不寫，底下那顆按鈕會變成「更新到 x.y.z」。
+   */
+  const checkUpdate = () =>
+    runAbout(async () => {
+      const result = await invoke<CheckResult>("check_update_now");
+      if (result.kind === "failed") throw result.value;
+      if (result.kind === "upToDate") setAboutNote("已是最新版本");
+    });
 
   // 匯入、登出、立即更新失敗時，後端都會把錯誤寫進 state，
   // `run()` 的 load() 會取回來顯示，所以這裡吞掉就好。
@@ -308,19 +331,15 @@ export default function App() {
         installing={about.installing}
         autostart={about.autostart}
         busy={busy}
+        note={aboutNote}
         error={aboutError}
         onClose={() => {
           setAbout(null);
           setAboutError(null);
+          setAboutNote(null);
         }}
-        onCheckUpdate={() =>
-          void runAbout(async () => {
-            await invoke("check_update_now");
-          })
-        }
-        onInstallUpdate={() =>
-          void runAbout(() => invoke("install_update"))
-        }
+        onCheckUpdate={() => void checkUpdate()}
+        onInstallUpdate={() => void runAbout(() => invoke("install_update"))}
         onAutostart={(enabled) =>
           void runAbout(() => invoke("set_autostart", { enabled }))
         }
