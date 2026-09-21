@@ -26,7 +26,9 @@ pub const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn http_client(timeout: Duration) -> reqwest::Client {
     reqwest::Client::builder()
-        .user_agent("GFNUsage/0.1")
+        // 版本只寫在 Cargo.toml 一個地方。寫死字串的話發佈幾次之後
+        // NVIDIA 那邊看到的永遠是 0.1，追問題時對不上是哪一版。
+        .user_agent(concat!("GFNUsage/", env!("CARGO_PKG_VERSION")))
         .timeout(timeout)
         .build()
         .expect("HTTP 用戶端應可建立")
