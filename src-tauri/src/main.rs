@@ -7,7 +7,6 @@ use gfnusage_lib::commands::{self, poll_due, refresh_into_state};
 use gfnusage_lib::panel::{self, PANEL_LABEL};
 use gfnusage_lib::tray;
 use gfnusage_lib::AppState;
-use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WindowEvent};
 
@@ -97,9 +96,9 @@ fn main() {
                 });
             }
 
-            let refresh_item = MenuItem::with_id(app, "refresh", "立即更新", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "結束", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&refresh_item, &quit_item])?;
+            app.manage(gfnusage_lib::update::UpdateState::default());
+
+            let menu = tray::menu::build(app.handle(), None)?;
 
             TrayIconBuilder::with_id(tray::TRAY_ID)
                 .icon(tray::placeholder_image())
@@ -108,9 +107,16 @@ fn main() {
                 // 左鍵留給面板，選單走右鍵。
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
-                    "quit" => app.exit(0),
+                    tray::menu::QUIT_ID => app.exit(0),
+                    // 使用者按了才裝。裝完 updater 會自己結束程序。
+                    tray::menu::INSTALL_UPDATE_ID => {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = gfnusage_lib::update::install(app).await;
+                        });
+                    }
                     // 使用者主動更新：不受「需重新登入」的暫停限制。
-                    "refresh" => {
+                    tray::menu::REFRESH_ID => {
                         let state = app.state::<Arc<AppState>>().inner().clone();
                         let app = app.clone();
                         tauri::async_runtime::spawn(async move {
@@ -228,6 +234,25 @@ fn main() {
                 }
             });
 
+            // 更新檢查獨立一條 task。不掛在 30 秒心跳上：心跳每半分鐘醒一次，
+            // 要不要發網路請求的判斷會變成每半分鐘一次；更要緊的是，檢查失敗
+            // 若走 `refresh_into_state` 的錯誤路徑，會蓋掉面板上額度的錯誤。
+            //
+            // debug 建構不查。開發中的版本號跟正式版一樣，`tauri dev` 會發現
+            // 「有新版」，而安裝結尾是 `std::process::exit(0)` —— 那會直接殺掉
+            // 開發中的程序去裝正式版。
+            #[cfg(not(debug_assertions))]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(gfnusage_lib::update::FIRST_CHECK_DELAY).await;
+                    loop {
+                        gfnusage_lib::update::check_once(&handle).await;
+                        tokio::time::sleep(gfnusage_lib::update::CHECK_INTERVAL).await;
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -245,6 +270,13 @@ fn main() {
             commands::import_schedule,
             commands::dismiss_tray_hint,
             commands::set_metric,
+            commands::app_version,
+            commands::get_update_status,
+            commands::check_update_now,
+            commands::install_update,
+            commands::dismiss_update,
+            commands::get_autostart,
+            commands::set_autostart,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

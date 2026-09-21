@@ -1,5 +1,7 @@
 pub mod icon;
 
+pub mod menu;
+
 use std::sync::atomic::Ordering;
 
 use chrono::{DateTime, Duration, Local, Utc};

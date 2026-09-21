@@ -8,6 +8,7 @@ pub mod panel;
 pub mod quota;
 pub mod store;
 pub mod tray;
+pub mod update;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;

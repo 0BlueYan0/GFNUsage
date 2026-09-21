@@ -204,6 +204,12 @@ pub struct UiState {
     ///
     /// 和 `metric` 同一個理由放這裡：它是這台機器的身分。空字串代表還沒生過。
     pub device_id: String,
+
+    /// 使用者按過「知道了」的那個更新版本號。空字串代表沒關過。
+    ///
+    /// 記版本而不是記一個布林：關掉的是「0.1.1 出來了」這句話，下一版出來
+    /// 還是要講。
+    pub update_dismissed: String,
 }
 
 pub fn ui_state_path(dir: &Path) -> PathBuf {
@@ -357,6 +363,7 @@ mod tests {
             tray_hint_dismissed: true,
             metric: Metric::Used,
             device_id: "105c3409-aace-4e9b-a3dd-30260a61a188".into(),
+            update_dismissed: "0.1.1".into(),
         };
 
         save_ui_state(&path, &ui).unwrap();

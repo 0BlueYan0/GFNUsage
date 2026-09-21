@@ -18,7 +18,9 @@ use crate::panel;
 use crate::quota::{DisplayState, QuotaSnapshot};
 use crate::store::{self, SnapshotRow};
 use crate::tray;
+use crate::update::UpdateState;
 use crate::AppState;
+use tauri_plugin_autostart::ManagerExt;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +35,12 @@ pub struct PanelData {
     pub has_credentials: bool,
     /// 憑證被拒絕。面板應回到登入畫面，輪詢已暫停。
     pub needs_login: bool,
+
+    /// 查到、使用者還沒關掉提示的新版本。面板只拿它畫一條橫幅。
+    ///
+    /// 由 `get_snapshot` 疊上去，不在 `panel_data()` 裡 —— 那個函式只認
+    /// `AppState`，而更新狀態是另一份 managed state。
+    pub update_version: Option<String>,
     /// `client_token` 的到期時刻（spec §4.4）。只有升級前匯入過的人還有，
     /// 重新登入一次就會是 `None` —— 那時不顯示橫幅。
     pub client_token_expires_at: Option<DateTime<Utc>>,
@@ -56,8 +64,81 @@ pub struct PanelData {
 const RECENT_SESSIONS: usize = 100;
 
 #[tauri::command]
-pub fn get_snapshot(state: State<'_, Arc<AppState>>) -> PanelData {
-    panel_data(state.inner())
+pub fn get_snapshot(state: State<'_, Arc<AppState>>, update: State<'_, UpdateState>) -> PanelData {
+    let mut data = panel_data(state.inner());
+    data.update_version = undismissed_update(state.inner(), update.inner());
+    data
+}
+
+/// 查到的新版本，扣掉使用者已經按過「知道了」的那一個。
+fn undismissed_update(state: &AppState, update: &UpdateState) -> Option<String> {
+    let version = update.available()?;
+    let ui = store::load_ui_state(&state.ui_state_path());
+    (ui.update_dismissed != version).then_some(version)
+}
+
+/// 這個建構的版本號。來源是 `Cargo.toml`，經 codegen 進到 `PackageInfo`。
+#[tauri::command]
+pub fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+/// 關於頁要的更新狀態。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    pub version: Option<String>,
+    pub installing: bool,
+}
+
+#[tauri::command]
+pub fn get_update_status(update: State<'_, UpdateState>) -> UpdateStatus {
+    UpdateStatus {
+        version: update.available(),
+        installing: update.installing(),
+    }
+}
+
+/// 使用者按的檢查。和背景那條走同一個函式，只是不必等下一個週期。
+#[tauri::command]
+pub async fn check_update_now(app: AppHandle) {
+    crate::update::check_once(&app).await;
+}
+
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    crate::update::install(app).await
+}
+
+/// 關掉橫幅。記下是哪一版，下一版出來還要再講一次。
+#[tauri::command]
+pub fn dismiss_update(state: State<'_, Arc<AppState>>, version: String) -> Result<(), String> {
+    let path = state.ui_state_path();
+    let mut ui = store::load_ui_state(&path);
+    ui.update_dismissed = version;
+    store::save_ui_state(&path, &ui)
+}
+
+/// 開機自動啟動的現況。
+///
+/// 直接問外掛，不另外存一份：真正說了算的是登錄檔 `HKCU\\...\\Run` 那一筆，
+/// 而使用者可以從工作管理員的「啟動」把它關掉。存一份鏡像就是準備說謊。
+#[tauri::command]
+pub fn get_autostart(app: AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let manager = app.autolaunch();
+    let result = if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
+    result.map_err(|e| e.to_string())?;
+    log::info!("開機自動啟動：{}", if enabled { "開" } else { "關" });
+    Ok(())
 }
 
 pub fn panel_data(state: &AppState) -> PanelData {
@@ -85,6 +166,8 @@ pub fn panel_data(state: &AppState) -> PanelData {
         has_credentials: stored.is_some() || adopted.is_some(),
         client_token_expires_at: stored.and_then(|stored| stored.client_token_expires_at),
         needs_login: state.needs_login.load(Ordering::SeqCst),
+        // 由 `get_snapshot` 疊上去。這個函式只認 `AppState`。
+        update_version: None,
         // 溢位區是 Windows 才有的東西。在 Rust 這邊判平台，不要讓 JS 去猜
         // —— 前端能拿到的只有 user agent，那是出了名的不可靠。
         show_tray_hint: cfg!(target_os = "windows") && !ui.tray_hint_dismissed,
