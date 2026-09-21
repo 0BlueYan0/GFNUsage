@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, "m*-*"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # tauri build 的 beforeBuildCommand 就是這個，而它會連 *.test.tsx 一起
+      # 型別檢查。在這裡先證明它過，免得只有打 tag 那天才發現。
+      - run: npm run build
+
+  rust:
+    # Windows 是真正的目標平台，而且 Linux 上編 tauri 還要先裝 webkit2gtk
+    # 那一串，對這個 repo 沒有回報。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      # 不需要先跑 npm run build：tauri 的 build.rs 用 custom-protocol feature
+      # 判斷 dev，純 cargo test 走 dev 分支，generate_context! 不會去找 dist/。
+      - run: cargo test --manifest-path src-tauri/Cargo.toml

@@ -36,6 +36,7 @@ fn main() {
         }))
         // 排第二：後面每一個外掛的初始化錯誤都要寫得進日誌。
         .plugin(gfnusage_lib::logging::plugin())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
