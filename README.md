@@ -3,7 +3,7 @@
 Keep an eye on your GeForce NOW monthly playtime quota, from the Windows
 system tray or the macOS menu bar.
 
-[繁體中文說明](README.zh-TW.md)
+[繁體中文說明](README.zh-TW.md) · [Changelog](CHANGELOG.md)
 
 > **Status:** the v1 feature set is done on Windows. GFNUsage signs in with
 > your NVIDIA account in a webview, keeps the session alive on its own, and

@@ -21,6 +21,8 @@ jobs:
     outputs:
       tag: ${{ steps.check.outputs.tag }}
       version: ${{ steps.check.outputs.version }}
+      notes_en: ${{ steps.notes.outputs.en }}
+      notes_zh: ${{ steps.notes.outputs.zh }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,6 +50,38 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$cargo_v" >> "$GITHUB_OUTPUT"
+      # 兩份 CHANGELOG 裡這一版那一段，抄進 release 說明。抄不到就停在這裡 ——
+      # 「這一版改了什麼」是下載的人唯一看得到的說明，忘了寫沒有別的地方補得回來。
+      - id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.check.outputs.version }}"
+          section() {
+            # `## [0.1.2] - ...` 到下一段為止，前後空行去掉。下一段可能是
+            # 下一個 `## `，也可能是檔尾那堆 `[0.1.1]: https://…` 連結定義
+            # —— 最舊的那一版沒有下一個標題，不擋的話會把整串連結抄進說明。
+            awk -v want="## [$version]" '
+              index($0, want) == 1 { on = 1; next }
+              on && (/^## / || /^\[[^]]+\]: /) { exit }
+              on { print }
+            ' "$1" | sed -e '/./,$!d' | tac | sed -e '/./,$!d' | tac
+          }
+          for file in CHANGELOG.md:en CHANGELOG.zh-TW.md:zh; do
+            path="${file%%:*}"
+            key="${file##*:}"
+            body=$(section "$path")
+            if [ -z "$body" ]; then
+              echo "::error file=$path::$path 裡沒有 $version 這一段，補上再發"
+              exit 1
+            fi
+            {
+              echo "$key<<CHANGELOG_EOF"
+              echo "$body"
+              echo "CHANGELOG_EOF"
+            } >> "$GITHUB_OUTPUT"
+          done
+          echo "已從兩份 CHANGELOG 取出 $version"
 
   # CI 只在 main、m*-* 與 PR 上跑，tag 不觸發它。沒有這一段的話，
   # 「在 main 上綠過」跟「這個 tag 是綠的」之間可以塞進任意多次修改，
@@ -107,6 +141,10 @@ jobs:
           releaseBody: |
             ## English
 
+            ### What changed
+
+            ${{ needs.guard.outputs.notes_en }}
+
             ### Windows
 
             Download `GFNUsage_${{ needs.guard.outputs.version }}_x64-setup.exe`
@@ -128,6 +166,10 @@ jobs:
 
             ## 繁體中文
 
+            ### 這一版改了什麼
+
+            ${{ needs.guard.outputs.notes_zh }}
+
             ### Windows
 
             下載 `GFNUsage_${{ needs.guard.outputs.version }}_x64-setup.exe`
@@ -141,6 +183,11 @@ jobs:
 
             未簽章也未公證，而且沒有人跑過。Gatekeeper 第一次會擋下來——在
             app 上按右鍵選**打開**，或到**系統設定 → 隱私權與安全性**放行。
+
+            ---
+
+            [CHANGELOG](https://github.com/0BlueYan0/GFNUsage/blob/${{ needs.guard.outputs.tag }}/CHANGELOG.md)
+            · [更新紀錄](https://github.com/0BlueYan0/GFNUsage/blob/${{ needs.guard.outputs.tag }}/CHANGELOG.zh-TW.md)
           # 草稿。人工確認過再按發佈 —— 按下去那一刻使用者才收得到更新。
           releaseDraft: true
           prerelease: false

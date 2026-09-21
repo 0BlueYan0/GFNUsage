@@ -3,7 +3,7 @@
 GeForce NOW 月配額用量監控。常駐在 **Windows 系統匣**與 **macOS 選單列**，
 一眼看到剩餘時數，並告訴你以目前速度會不會用完。
 
-[English](README.md)
+[English](README.md) · [更新紀錄](CHANGELOG.zh-TW.md)
 
 > **狀態：Windows 上的第一版功能到齊。**
 > 用 NVIDIA 帳號在 webview 裡登入，之後自己維持登入狀態，在系統匣顯示
