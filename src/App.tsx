@@ -7,11 +7,12 @@ import {
   formatCountdown,
   formatDuration,
   formatHeroUnit,
-  formatResetAt,
+  formatLocalDateTime,
   percentOf,
   splitDuration,
 } from "./format";
 import Pace from "./Pace";
+import Sessions from "./Sessions";
 import ScheduleForm from "./Schedule";
 import type {
   DisplayState,
@@ -93,8 +94,8 @@ function Quota({
             <dt>重置</dt>
             {/* 倒數不加條件：舊寫法在剩不到一天時會整句消失，
                 而那正是最該顯示的時候。 */}
-            <dd title={formatResetAt(snapshot.spanEnd)}>
-              {formatResetAt(snapshot.spanEnd)}，還有{" "}
+            <dd title={formatLocalDateTime(snapshot.spanEnd)}>
+              {formatLocalDateTime(snapshot.spanEnd)}，還有{" "}
               {formatCountdown(snapshot.spanEnd)}
             </dd>
           </div>
@@ -139,6 +140,8 @@ export default function App() {
   // 「到底有沒有登入在跑」以後端的 `loginPending` 為準 —— 開瀏覽器會把
   // 面板收起來，本地旗標撐不過那一下。
   const [starting, setStarting] = useState(false);
+  // 看不看得到「最近」那一頁。紀錄本身跟著 `PanelData` 一起來，這裡只管畫面。
+  const [showSessions, setShowSessions] = useState(false);
 
   const load = useCallback(async () => {
     setData(await invoke<PanelData>("get_snapshot"));
@@ -283,6 +286,16 @@ export default function App() {
     );
   }
 
+  // 排在登入判斷之後：沒有登入就沒有紀錄，那時該看到的是登入畫面。
+  if (showSessions) {
+    return (
+      <Sessions
+        sessions={data.recentSessions}
+        onClose={() => setShowSessions(false)}
+      />
+    );
+  }
+
   const snapshot = data.snapshot;
   const badge = snapshot ? STATE_BADGE[data.state] : null;
 
@@ -298,31 +311,36 @@ export default function App() {
         )}
       </header>
 
-      {banners(true)}
+      {/* 中間這一段可捲，`.actions` 釘在底下。面板是 360×480 的固定尺寸，
+          沒有這層包裝的話，多加任何一區都會把按鈕擠出視窗 —— `.panel` 是
+          `overflow: hidden`，擠出去就是不見，使用者沒有出口。 */}
+      <div className="panel__body">
+        {banners(true)}
 
-      {snapshot ? (
-        <Quota
-          snapshot={snapshot}
-          state={data.state}
-          pace={data.pace}
-          metric={data.metric}
-        />
-      ) : (
-        <p className="note">沒有資料</p>
-      )}
+        {snapshot ? (
+          <Quota
+            snapshot={snapshot}
+            state={data.state}
+            pace={data.pace}
+            metric={data.metric}
+          />
+        ) : (
+          <p className="note">沒有資料</p>
+        )}
 
-      {data.lastError && <p className="alert">{data.lastError}</p>}
+        {data.lastError && <p className="alert">{data.lastError}</p>}
 
-      {snapshot && (
-        <p className="note">
-          資料時間{" "}
-          {new Date(snapshot.fetchedAt).toLocaleTimeString("zh-TW", {
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: false,
-          })}
-        </p>
-      )}
+        {snapshot && (
+          <p className="note">
+            資料時間{" "}
+            {new Date(snapshot.fetchedAt).toLocaleTimeString("zh-TW", {
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            })}
+          </p>
+        )}
+      </div>
 
       <div className="actions">
         <button
@@ -331,6 +349,13 @@ export default function App() {
           onClick={() => runQuietly(() => invoke("refresh_now"))}
         >
           {busy ? "更新中…" : "立即更新"}
+        </button>
+        <button
+          className="link"
+          disabled={busy}
+          onClick={() => setShowSessions(true)}
+        >
+          最近
         </button>
         <button
           className="link"

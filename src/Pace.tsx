@@ -1,4 +1,4 @@
-import { formatDuration, formatOverPace, formatResetAt } from "./format";
+import { formatDuration, formatOverPace, formatLocalDateTime } from "./format";
 import type { PaceNote, PaceReport } from "./types";
 
 const NOTE_TEXT: Record<PaceNote, string> = {
@@ -63,7 +63,7 @@ export default function Pace({
                 spec §6.5 的 r = 0 那一列要求補，那條比「會剩 X」早寫。 */}
             {pace.runsOutAt && (
               <span className="pace__runs-out">
-                {formatResetAt(pace.runsOutAt)} 用完
+                {formatLocalDateTime(pace.runsOutAt)} 用完
               </span>
             )}
             {wasted !== null && wasted > 0 && (

@@ -12,12 +12,13 @@ export function splitDuration(minutes: number): {
 }
 
 /**
- * 重置時點以本地時區顯示。
+ * UTC 時刻以本地時區顯示，日期與時間都印。
  *
- * API 給的是 UTC，而且重置並不落在本地午夜：`2026-10-15T23:59:59Z`
- * 在台灣是 10/16 早上 07:59。只印日期會讓人誤以為是午夜，所以連時間一起印。
+ * 連時間一起印是為了重置時點：API 給的是 UTC，而重置並不落在本地午夜，
+ * `2026-10-15T23:59:59Z` 在台灣是 10/16 早上 07:59，只印日期會讓人誤以為
+ * 是午夜。遊玩紀錄的起始時間用同一個格式。
  */
-export function formatResetAt(iso: string, timeZone?: string): string {
+export function formatLocalDateTime(iso: string, timeZone?: string): string {
   return new Date(iso).toLocaleString("zh-TW", {
     month: "numeric",
     day: "numeric",

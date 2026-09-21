@@ -5,7 +5,7 @@ import {
   formatDuration,
   formatHeroUnit,
   formatOverPace,
-  formatResetAt,
+  formatLocalDateTime,
   percentOf,
   splitDuration,
 } from "./format";
@@ -25,16 +25,16 @@ describe("splitDuration", () => {
   });
 });
 
-describe("formatResetAt", () => {
+describe("formatLocalDateTime", () => {
   // 重置時點是 UTC，在台灣會落到隔天早上 —— 這是最容易誤解的一點。
   it("把 UTC 的重置時點換算成台北時間", () => {
-    expect(formatResetAt("2026-10-15T23:59:59.999Z", "Asia/Taipei")).toBe(
+    expect(formatLocalDateTime("2026-10-15T23:59:59.999Z", "Asia/Taipei")).toBe(
       "10/16 07:59",
     );
   });
 
   it("同一個時點在 UTC 下是前一天", () => {
-    expect(formatResetAt("2026-10-15T23:59:59.999Z", "UTC")).toBe("10/15 23:59");
+    expect(formatLocalDateTime("2026-10-15T23:59:59.999Z", "UTC")).toBe("10/15 23:59");
   });
 });
 

@@ -63,6 +63,25 @@ body {
   gap: 8px;
 }
 
+/* 標題釘在捲動區頂端。
+   `.panel` 的 16px 上內距要移到標題身上，不然那條帶子沒有東西蓋著，
+   捲過去的列會從標題**上方**穿出來 —— `top: 0` 是貼齊內容區上緣，
+   不是貼齊面板上緣。左右用負 margin 撐滿，背景才蓋得住整行。 */
+.panel--pinned {
+  padding-top: 0;
+}
+
+.panel__header--sticky {
+  position: sticky;
+  /* -1px 不是微調：面板的 0.8px 邊框與內容區上緣之間差了一個次像素，
+     `top: 0` 會在那條縫裡露出捲過去的列。往上多蓋一格就沒了。 */
+  top: -1px;
+  z-index: 1;
+  margin: 0 -16px;
+  padding: 17px 16px 10px;
+  background: var(--bg);
+}
+
 .panel__title {
   margin: 0;
   font-size: 13px;
@@ -183,8 +202,25 @@ body {
   word-break: break-word;
 }
 
+/* 面板中間可捲的那一段。
+   `.panel` 是 360×480 加 `overflow: hidden`，內容超過就是直接不見。
+   沒有這一層的話，多加一區就把 `.actions` 擠出視窗，使用者連「立即更新」
+   都按不到。`min-height: 0` 不能省：flex 子元素的預設最小高度是內容高度，
+   不歸零的話它不肯縮，捲軸永遠不會出現。 */
+.panel__body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  /* 捲軸出現時不要壓到文字。 */
+  scrollbar-gutter: stable;
+}
+
 .actions {
   display: flex;
+  flex: 0 0 auto;
   gap: 8px;
   margin-top: auto;
   padding-top: 12px;
@@ -313,9 +349,11 @@ textarea {
   color: var(--fg-muted);
 }
 
+/* 捲的是面板自己，不是文件。
+   `height: auto` 加 `overflow-y: auto` 的組合會讓它變成 sticky 的容器區塊
+   卻又不產生捲動，裡面貼上去的標題因此跟著文件一起捲走。 */
 .panel--scroll {
-  height: auto;
-  min-height: 100vh;
+  height: 100vh;
   overflow-y: auto;
 }
 
@@ -435,4 +473,56 @@ textarea {
 
 .hint button {
   align-self: center;
+}
+
+.sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.sessions__title {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.sessions__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+}
+
+.sessions__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* 遊戲名稱吃掉剩下的寬度並在過長時截斷。時間與長度是固定寬度的數字，
+   被擠掉的話這一列就只剩一個沒有上下文的名字。 */
+.sessions__game {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sessions__when {
+  margin-left: auto;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.sessions__length {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
 }

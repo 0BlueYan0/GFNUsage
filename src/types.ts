@@ -69,8 +69,19 @@ export interface Schedule {
 /** 面板主要數字看哪一邊。進度條跟著它走。 */
 export type Metric = "remaining" | "used";
 
+/** 一場遊玩紀錄。時間是 ISO 8601 的 UTC 字串。 */
+export interface PlaySession {
+  gameTitle: string;
+  startedAt: string;
+  /** 還在玩的那一場沒有結束時間。 */
+  endedAt: string | null;
+  minutes: number;
+}
+
 export interface PanelData {
   snapshot: QuotaSnapshot | null;
+  /** 最近幾場，新的在前。抓不到逐場紀錄時是空的。 */
+  recentSessions: PlaySession[];
   pace: PaceReport | null;
   /** 併入配速後的狀態。畫面一律用這個。 */
   state: DisplayState;
