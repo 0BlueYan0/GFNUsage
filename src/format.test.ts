@@ -36,6 +36,13 @@ describe("formatLocalDateTime", () => {
   it("同一個時點在 UTC 下是前一天", () => {
     expect(formatLocalDateTime("2026-10-15T23:59:59.999Z", "UTC")).toBe("10/15 23:59");
   });
+
+  // 較新的 CLDR 把 zh-Hant 的日期時間分隔改成窄不斷行空格。肉眼看不出來，
+  // 但字串比不相等，而使用者拿到哪一個由他機器上的 ICU 決定。
+  it("分隔用半形空格，不用 ICU 給的那個", () => {
+    const out = formatLocalDateTime("2026-10-15T23:59:59.999Z", "UTC");
+    expect(out).not.toMatch(/[^ -~]/);
+  });
 });
 
 describe("daysUntil", () => {

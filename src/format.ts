@@ -19,7 +19,7 @@ export function splitDuration(minutes: number): {
  * 是午夜。遊玩紀錄的起始時間用同一個格式。
  */
 export function formatLocalDateTime(iso: string, timeZone?: string): string {
-  return new Date(iso).toLocaleString("zh-TW", {
+  const formatted = new Date(iso).toLocaleString("zh-TW", {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
@@ -27,6 +27,10 @@ export function formatLocalDateTime(iso: string, timeZone?: string): string {
     hour12: false,
     timeZone,
   });
+  // 日期與時間之間那個空白，不同 ICU 版本給的不是同一個字元 —— CLDR 後來
+  // 把 zh-Hant 改成窄不斷行空格（U+202F）。肉眼一模一樣，比對就不相等，
+  // 而使用者的 Windows 給哪一個由他的系統決定。統一成半形空格。
+  return formatted.replace(/\p{Zs}/gu, " ");
 }
 
 /** 距離某時點還有幾天，無條件捨去。給「要不要示警」這種門檻判斷用。 */
