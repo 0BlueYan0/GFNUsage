@@ -166,6 +166,10 @@ export default function App() {
   const [aboutError, setAboutError] = useState<string | null>(null);
   // 查完但沒有新版本時要講的那一句。查到的話按鈕自己會變。
   const [aboutNote, setAboutNote] = useState<string | null>(null);
+  // 關於頁自己的忙碌旗標，不共用 `busy`。更新檢查會跑到十幾秒（系統 proxy
+  // 不通時要等逾時再直連一次），共用的話那段時間主面板的「立即更新」會寫
+  // 「更新中…」、五顆按鈕全部按不動 —— 而那裡根本沒有事情在跑。
+  const [aboutBusy, setAboutBusy] = useState(false);
 
   const load = useCallback(async () => {
     setData(await invoke<PanelData>("get_snapshot"));
@@ -249,7 +253,7 @@ export default function App() {
    * 混進「開機啟動設不起來」只會讓兩件事都看不懂。
    */
   const runAbout = async (task: () => Promise<unknown>) => {
-    setBusy(true);
+    setAboutBusy(true);
     setAboutError(null);
     setAboutNote(null);
     try {
@@ -258,7 +262,7 @@ export default function App() {
       setAboutError(typeof reason === "string" ? reason : String(reason));
     } finally {
       setAbout(await loadAbout());
-      setBusy(false);
+      setAboutBusy(false);
     }
   };
 
@@ -345,7 +349,7 @@ export default function App() {
         updateVersion={about.updateVersion}
         installing={about.installing}
         autostart={about.autostart}
-        busy={busy}
+        busy={aboutBusy}
         note={aboutNote}
         error={aboutError}
         onClose={() => {
