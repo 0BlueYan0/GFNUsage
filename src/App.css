@@ -142,8 +142,10 @@ body {
 /* `flex: 0 0 auto` 不能省。`.panel__body` 是 flex column，內容超出可視高度
    時預設的 `flex-shrink: 1` 會壓縮每一個子元素，而這一條裡面沒有文字，
    最小高度是 0，於是它被壓到 0 就整條不見了。其他幾區有字撐著才沒事。
-   加了走勢圖之後內容才開始超出，所以這條在那之前一直看不出問題。 */
+   加了走勢圖之後內容才開始超出，所以這條在那之前一直看不出問題。
+   `position: relative` 是配速那條線的定位基準。 */
 .meter {
+  position: relative;
   flex: 0 0 auto;
   height: 6px;
   border-radius: 3px;
@@ -156,6 +158,17 @@ body {
   border-radius: 3px;
   background: var(--accent);
   transition: width 240ms ease;
+}
+
+/* 配速門檻。長條走過它就是超前。
+   用前景色是因為它要同時壓在填滿的那一段與沒填的那一段上，兩邊都得看得見。
+   `.meter` 是 overflow: hidden，所以線的兩端跟著圓角一起裁掉。 */
+.meter__pace {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--fg);
 }
 
 .meter__fill--low {
@@ -333,32 +346,6 @@ textarea {
 
 .pace__today {
   margin: 0;
-  font-weight: 600;
-}
-
-.pace__row {
-  display: flex;
-  gap: 10px;
-  font-size: 13px;
-}
-
-.pace__label {
-  flex: 0 0 32px;
-  color: var(--fg-muted);
-}
-
-.pace__body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.pace__flag {
-  color: var(--fg-muted);
-}
-
-.pace__flag--over {
-  color: var(--state-over-pace);
   font-weight: 600;
 }
 

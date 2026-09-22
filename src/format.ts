@@ -146,3 +146,23 @@ export function formatForecast(
   }
   return lines.join("\n");
 }
+
+/**
+ * 進度條 tooltip 的內容，也就是原本面板上「配速」那一列的兩句。
+ *
+ * 一行一句。配速門檻算不出來（本期還沒有任何可遊玩時間）時回 `null`，
+ * 那時進度條上也沒有那條線。
+ */
+export function formatPace(
+  pace: PaceReport,
+  usedMinutes: number,
+): string | null {
+  const expected = pace.expectedUsedMinutes;
+  const over = pace.overPaceMinutes;
+  if (expected === null || over === null) return null;
+
+  return [
+    `已用 ${formatDuration(usedMinutes)} vs 期望 ${formatDuration(expected)}`,
+    formatOverPace(over),
+  ].join("\n");
+}

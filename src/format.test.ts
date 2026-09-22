@@ -7,6 +7,7 @@ import {
   formatHeroUnit,
   formatOverPace,
   formatLocalDateTime,
+  formatPace,
   modifier,
   percentOf,
   splitDuration,
@@ -224,6 +225,44 @@ describe("formatForecast", () => {
       formatForecast(
         report({ projectedUsedMinutes: null, overshootMinutes: null }),
         6000,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("formatPace", () => {
+  const report = (overrides: Partial<PaceReport> = {}): PaceReport => ({
+    availPastMinutes: 14400,
+    availLeftMinutes: 28800,
+    expectedUsedMinutes: 2000,
+    overPaceMinutes: -500,
+    burnRate: 0.104,
+    projectedUsedMinutes: 4500,
+    overshootMinutes: -1500,
+    runsOutAt: null,
+    wastedMinutes: 600,
+    todayBudgetMinutes: 225,
+    note: null,
+    ...overrides,
+  });
+
+  it("顯示已用與期望的對照", () => {
+    expect(formatPace(report(), 1500)).toBe(
+      "已用 25 小時 vs 期望 33 小時 20 分鐘\n低於門檻 8 小時 20 分鐘",
+    );
+  });
+
+  it("超前消耗時說超前多少", () => {
+    const text = formatPace(report({ overPaceMinutes: 1000 }), 3000);
+    expect(text).toMatch(/超前 16 小時 40 分鐘$/);
+  });
+
+  /// 本期還沒有任何可遊玩時間時算不出門檻，進度條上也沒有那條線。
+  it("算不出門檻時回 null", () => {
+    expect(
+      formatPace(
+        report({ expectedUsedMinutes: null, overPaceMinutes: null }),
+        1500,
       ),
     ).toBeNull();
   });

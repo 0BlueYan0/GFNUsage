@@ -21,36 +21,27 @@ function report(overrides: Partial<PaceReport> = {}): PaceReport {
 }
 
 describe("Pace", () => {
-  it("顯示已用與期望的對照", () => {
-    render(<Pace pace={report()} usedMinutes={1500} />);
-    expect(screen.getByText(/已用 25 小時/)).toBeTruthy();
-    expect(screen.getByText(/期望 33 小時 20 分鐘/)).toBeTruthy();
-    expect(screen.getByText(/低於門檻/)).toBeTruthy();
-  });
-
-  it("超前消耗時說超前多少", () => {
-    render(<Pace pace={report({ overPaceMinutes: 1000 })} usedMinutes={3000} />);
-    expect(screen.getByText(/超前 16 小時 40 分鐘/)).toBeTruthy();
-  });
-
   it("今日額度一律顯示", () => {
-    render(<Pace pace={report()} usedMinutes={1500} />);
+    render(<Pace pace={report()} />);
     expect(screen.getByText(/今天還能玩 3 小時 45 分鐘/)).toBeTruthy();
   });
 
-  /// 預測搬去走勢圖的 tooltip 了（`formatForecast`）。這裡留一條守著，
-  /// 免得哪天有人又把同一件事塞回這一區，畫面上就講了兩次。
-  it("不講預測，那是走勢圖的事", () => {
+  /// 配速變成進度條上的那條線，預測是走勢圖那條虛線，兩邊的字都在各自的
+  /// tooltip 裡。這一條守著它們不要又被塞回這一區，畫面上講兩次。
+  it("不講配速也不講預測", () => {
     render(
       <Pace
         pace={report({
+          overPaceMinutes: 1000,
           projectedUsedMinutes: 9000,
           overshootMinutes: 3000,
           runsOutAt: "2026-09-21T00:00:00Z",
         })}
-        usedMinutes={3000}
       />,
     );
+    expect(screen.queryByText(/已用/)).toBeNull();
+    expect(screen.queryByText(/期望/)).toBeNull();
+    expect(screen.queryByText(/超前/)).toBeNull();
     expect(screen.queryByText(/月底約用/)).toBeNull();
     expect(screen.queryByText(/用完/)).toBeNull();
     expect(screen.queryByText(/浪費掉/)).toBeNull();
@@ -65,7 +56,6 @@ describe("Pace", () => {
           overshootMinutes: null,
           wastedMinutes: null,
         })}
-        usedMinutes={100}
       />,
     );
     expect(screen.getByText(/資料累積中/)).toBeTruthy();
@@ -81,7 +71,6 @@ describe("Pace", () => {
           projectedUsedMinutes: null,
           wastedMinutes: null,
         })}
-        usedMinutes={1500}
       />,
     );
     expect(screen.getByText(/沒有可遊玩時間了/)).toBeTruthy();

@@ -10,6 +10,7 @@ import {
   formatHeroUnit,
   formatForecast,
   formatLocalDateTime,
+  formatPace,
   modifier,
   percentOf,
   splitDuration,
@@ -59,6 +60,18 @@ function Quota({
   // 用 44px 排，360px 寬的面板放不下。
   const shown = splitDuration(value);
 
+  // 配速門檻在進度條上的位置。跟著 metric 走：看已使用時是「該用掉多少」，
+  // 看剩餘時是「該剩下多少」，也就是同一條界線的另一邊。
+  const expected = pace?.expectedUsedMinutes ?? null;
+  const pacePercent =
+    expected === null
+      ? null
+      : percentOf(
+          metric === "used" ? expected : snapshot.totalMinutes - expected,
+          snapshot.totalMinutes,
+        );
+  const paceText = pace && formatPace(pace, snapshot.usedMinutes);
+
   return (
     <>
       <div className="hero">
@@ -78,12 +91,25 @@ function Quota({
         aria-valuenow={percent}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label={metric === "used" ? "已使用的月配額" : "剩餘的月配額"}
+        aria-label={
+          (metric === "used" ? "已使用的月配額" : "剩餘的月配額") +
+          // 讀螢幕的人不會滑過來，而配速那幾句已經不在面板上了。
+          (paceText ? `。${paceText.replace(/\n/g, "，")}` : "")
+        }
+        title={paceText ?? undefined}
       >
         <div
           className={modifier("meter__fill", state)}
           style={{ width: `${percent}%` }}
         />
+        {/* 配速門檻。長條走過它就是超前，這件事本來寫成一列字。
+            減 1px 是把 2px 寬的線壓在那個位置上，不是從那裡往右長。 */}
+        {pacePercent !== null && (
+          <div
+            className="meter__pace"
+            style={{ left: `calc(${pacePercent}% - 1px)` }}
+          />
+        )}
       </div>
 
       <dl className="facts">
@@ -116,7 +142,7 @@ function Quota({
         )}
       </dl>
 
-      {pace && <Pace pace={pace} usedMinutes={snapshot.usedMinutes} />}
+      {pace && <Pace pace={pace} />}
     </>
   );
 }
