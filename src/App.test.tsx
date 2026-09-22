@@ -34,6 +34,7 @@ function panelData(remaining: number) {
     showTrayHint: false,
     loginPending: false,
     metric: "remaining",
+    pollInterval: "30m",
     recentSessions: [],
     daily: [],
     updateVersion: null,

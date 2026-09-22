@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::api::subscriptions::fetch_subscription;
@@ -16,7 +16,7 @@ use crate::pace::schedule::Schedule;
 use crate::pace::{self, PaceReport};
 use crate::panel;
 use crate::quota::{DisplayState, QuotaSnapshot};
-use crate::store::{self, SnapshotRow};
+use crate::store::{self, PollInterval, SnapshotRow};
 use crate::tray;
 use crate::trend;
 use crate::update::{CheckResult, UpdateState};
@@ -52,6 +52,8 @@ pub struct PanelData {
     pub login_pending: bool,
     /// 主要數字與進度條看哪一邊。
     pub metric: store::Metric,
+    /// 定時抓取的間隔。設定頁要拿它畫出目前選中的是哪一個。
+    pub poll_interval: PollInterval,
 
     /// 最近幾場，新的在前。抓不到逐場紀錄時是空的。
     pub recent_sessions: Vec<crate::api::playtime::PlaySession>,
@@ -186,6 +188,7 @@ pub fn panel_data(state: &AppState) -> PanelData {
         show_tray_hint: cfg!(target_os = "windows") && !ui.tray_hint_dismissed,
         login_pending: state.login_pending.load(Ordering::SeqCst),
         metric: ui.metric,
+        poll_interval: ui.poll_interval,
         // `fetch_session_history` 已經排好新的在前。
         recent_sessions: state
             .sessions
@@ -225,6 +228,28 @@ pub fn write_metric(state: &AppState, metric: store::Metric) -> Result<(), Strin
     let path = state.ui_state_path();
     let mut ui = store::load_ui_state(&path);
     ui.metric = metric;
+    store::save_ui_state(&path, &ui)
+}
+
+/// 換掉定時抓取的間隔。
+///
+/// 寫完立刻重畫系統匣：過期門檻跟著這個值走，從「關閉」改成 30 分鐘會把
+/// 門檻從 24 小時縮到 1 小時，已經三小時舊的資料該當場變淡，不是等下一圈。
+#[tauri::command]
+pub fn set_poll_interval<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, Arc<AppState>>,
+    interval: PollInterval,
+) -> Result<(), String> {
+    write_poll_interval(state.inner(), interval)?;
+    tray::sync(&app, state.inner());
+    Ok(())
+}
+
+pub fn write_poll_interval(state: &AppState, interval: PollInterval) -> Result<(), String> {
+    let path = state.ui_state_path();
+    let mut ui = store::load_ui_state(&path);
+    ui.poll_interval = interval;
     store::save_ui_state(&path, &ui)
 }
 
@@ -665,6 +690,24 @@ pub fn poll_due(state: &AppState) -> bool {
     !state.needs_login.load(Ordering::SeqCst) && !state.login_pending.load(Ordering::SeqCst)
 }
 
+/// 距離上次抓取已經超過設定的間隔。
+///
+/// 和 `poll_due` 是兩件事：那個是登入閘門，這個是時間閘門。兩個名字擺在
+/// 同一個 `if` 裡會讀錯，所以刻意不叫 `poll_due` 的近親。
+///
+/// `last` 是 `None`（這個行程還沒抓過）一律到期，所以啟動時第一圈就會抓。
+/// 間隔設成「關閉」則永遠不到期 —— 喚醒與視窗事件不走這裡。
+pub fn interval_elapsed(
+    last: Option<std::time::Instant>,
+    now: std::time::Instant,
+    interval: PollInterval,
+) -> bool {
+    let Some(span) = interval.duration() else {
+        return false;
+    };
+    last.map_or(true, |last| now.duration_since(last) >= span)
+}
+
 /// 牆鐘比單調時鐘多走這麼多，就當作機器剛從睡眠中醒來。
 ///
 /// 30 秒的心跳加上一般的排程延遲，兩個時鐘不會差到兩分鐘。
@@ -684,7 +727,7 @@ pub fn woke_from_sleep(monotonic: std::time::Duration, wall: chrono::Duration) -
 }
 
 /// 把這次抓到的快照記進歷史。剩餘時數與上一筆相同時跳過（spec §8），
-/// 否則閒置一整天就會多出 288 列一模一樣的資料。
+/// 否則閒置一整天就會多出一整天份一模一樣的資料。
 ///
 /// 「上一筆」指的是這個行程記憶體裡的上一次，不是檔案的最後一行 ——
 /// 所以**重開程式後的第一筆一定會寫**，即使它和檔案最後一行重複。
@@ -801,7 +844,7 @@ pub async fn refresh_state(state: &AppState) -> Result<QuotaSnapshot, String> {
         Err(e) => {
             if matches!(e, GfnError::NeedsLogin) {
                 // 從沒事變成要重新登入，是使用者唯一非動手不可的狀態轉換。
-                // 只記第一次翻轉，之後每五分鐘都會走到這裡。
+                // 只記第一次翻轉，之後每個抓取週期都會走到這裡。
                 if !state.needs_login.swap(true, Ordering::SeqCst) {
                     log::warn!("既有登入被拒絕，輪詢暫停到重新登入為止");
                 }
@@ -822,9 +865,19 @@ pub async fn refresh_into_state<R: Runtime>(
     app: &AppHandle<R>,
     state: &Arc<AppState>,
 ) -> Result<QuotaSnapshot, String> {
+    // 在 await 之前就記下，而且成敗都記。
+    //
+    // 記成功的那次會讓「抓失敗」變成每個心跳重試一次，也就是 spec §9 決定
+    // 不做的退避重試從後門被放進來。這個鎖不跨 await（AppState 的第 5 條）。
+    *state.last_poll.lock().unwrap() = Some(std::time::Instant::now());
+
     let result = refresh_state(state).await;
     recompute_pace(state, Utc::now());
     tray::sync(app, state);
+    // 面板開著的話要跟著變。成敗都發：失敗時 `last_error` 也是新的，
+    // 那一行紅字同樣該當場出現。送不出去不算失敗 —— 面板沒開的時候
+    // 本來就沒有人聽，而它下次被叫出來會自己重讀。
+    let _ = app.emit(panel::REFRESHED_EVENT, ());
     result
 }
 
@@ -1008,8 +1061,8 @@ mod tests {
         }
     }
 
-    /// 閒置時每 5 分鐘抓一次，剩餘時數不動。每次都寫的話一天就多出
-    /// 288 列一模一樣的資料。
+    /// 閒置時照樣會定時抓，而剩餘時數不動。每次都寫的話一天就多出
+    /// 幾十列一模一樣的資料。
     #[tokio::test]
     async fn an_unchanged_remaining_time_is_not_written_twice() {
         let h = harness(true).await;
@@ -1315,6 +1368,62 @@ mod tests {
         );
     }
 
+    /// 和 `metric` 同一組保證：預設值明確，選過之後留在檔案裡。
+    #[tokio::test]
+    async fn the_poll_interval_defaults_to_thirty_minutes_and_survives() {
+        let h = harness(false).await;
+        assert_eq!(panel_data(&h.state).poll_interval, PollInterval::Min30);
+
+        write_poll_interval(&h.state, PollInterval::Off).unwrap();
+
+        assert_eq!(panel_data(&h.state).poll_interval, PollInterval::Off);
+        assert_eq!(
+            store::load_ui_state(&h.state.ui_state_path()).poll_interval,
+            PollInterval::Off
+        );
+    }
+
+    /// 兩個設定共用一個檔案，寫一個不能把另一個洗掉。
+    #[tokio::test]
+    async fn writing_one_ui_setting_leaves_the_other_alone() {
+        let h = harness(false).await;
+
+        write_metric(&h.state, store::Metric::Used).unwrap();
+        write_poll_interval(&h.state, PollInterval::Hour6).unwrap();
+
+        let data = panel_data(&h.state);
+        assert_eq!(data.metric, store::Metric::Used);
+        assert_eq!(data.poll_interval, PollInterval::Hour6);
+    }
+
+    /// 沒抓過就到期。不然全新安裝要等滿一個間隔才看得到第一個數字，
+    /// 而使用者選的可能是 24 小時。
+    #[test]
+    fn the_first_tick_is_always_due() {
+        let now = std::time::Instant::now();
+        assert!(interval_elapsed(None, now, PollInterval::Hour24));
+    }
+
+    #[test]
+    fn the_interval_is_due_only_after_it_has_passed() {
+        let now = std::time::Instant::now();
+        let long_ago = now - std::time::Duration::from_secs(29 * 60);
+        assert!(!interval_elapsed(Some(long_ago), now, PollInterval::Min30));
+
+        let longer_ago = now - std::time::Duration::from_secs(30 * 60);
+        assert!(interval_elapsed(Some(longer_ago), now, PollInterval::Min30));
+    }
+
+    /// 「關閉」的定義。喚醒與 GFN 視窗轉換不走這個函式，所以關掉之後
+    /// 剩下的抓取來源只有那些事件與使用者自己按。
+    #[test]
+    fn nothing_is_ever_due_when_the_interval_is_off() {
+        let now = std::time::Instant::now();
+        let long_ago = now - std::time::Duration::from_secs(86_400 * 7);
+        assert!(!interval_elapsed(Some(long_ago), now, PollInterval::Off));
+        assert!(!interval_elapsed(None, now, PollInterval::Off));
+    }
+
     #[test]
     fn a_normal_tick_is_not_a_wake_up() {
         assert!(!woke_from_sleep(
@@ -1508,7 +1617,8 @@ mod tests {
     }
 
     /// 持續 401 時只准鑄兩顆（第一次 + 重試），然後黏住、暫停輪詢。
-    /// 否則每 5 分鐘一顆，一小時就把「同時有效 token 上限」撞滿。
+    /// 否則每個抓取週期一顆，加上 GFN 視窗事件那幾次，很快就把
+    /// 「同時有效 token 上限」撞滿。
     #[tokio::test]
     async fn persistent_401_marks_needs_login_and_pauses_polling() {
         let h = harness(true).await;

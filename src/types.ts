@@ -69,6 +69,9 @@ export interface Schedule {
 /** 面板主要數字看哪一邊。進度條跟著它走。 */
 export type Metric = "remaining" | "used";
 
+/** 定時抓取的間隔。`off` 是完全不定時抓。 */
+export type PollInterval = "off" | "30m" | "1h" | "6h" | "24h";
+
 /** 一場遊玩紀錄。時間是 ISO 8601 的 UTC 字串。 */
 export interface PlaySession {
   gameTitle: string;
@@ -118,6 +121,7 @@ export interface PanelData {
    */
   loginPending: boolean;
   metric: Metric;
+  pollInterval: PollInterval;
   /** 查到、使用者還沒關掉提示的新版本。沒有就是已經最新。 */
   updateVersion: string | null;
 }

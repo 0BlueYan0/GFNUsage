@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   Metric,
+  PollInterval,
   Schedule,
   ScheduleException,
   WeeklyWindow,
@@ -18,6 +19,14 @@ const AUTOSAVE_DELAY = 600;
 
 /** 新增時段的預設值：每天 00:00–07:00，也就是睡覺。 */
 const DEFAULT_END_MINUTE = 420;
+
+const POLL_INTERVALS: [PollInterval, string][] = [
+  ["off", "關閉"],
+  ["30m", "30 分鐘"],
+  ["1h", "1 小時"],
+  ["6h", "6 小時"],
+  ["24h", "24 小時"],
+];
 
 /**
  * 分鐘數轉 `<input type="time">` 吃的 HH:MM。
@@ -97,20 +106,24 @@ export default function ScheduleForm({
   value,
   busy,
   metric,
+  pollInterval,
   onSave,
   onExport,
   onImport,
   onMetric,
+  onPollInterval,
   onClose,
 }: {
   value: Schedule;
   busy: boolean;
   metric: Metric;
+  pollInterval: PollInterval;
   /// 這三個回傳的 promise 被 reject 時，訊息會顯示在表單上。
   onSave: (schedule: Schedule) => Promise<void> | void;
   onExport: (schedule: Schedule) => Promise<void> | void;
   onImport: () => Promise<void> | void;
   onMetric: (metric: Metric) => Promise<void> | void;
+  onPollInterval: (interval: PollInterval) => Promise<void> | void;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<Schedule>(value);
@@ -196,6 +209,13 @@ export default function ScheduleForm({
     );
   };
 
+  const choosePollInterval = (next: PollInterval) => {
+    setError(null);
+    void Promise.resolve(onPollInterval(next)).catch((reason) =>
+      setError(messageOf(reason)),
+    );
+  };
+
   const importFile = () => {
     setError(null);
     void Promise.resolve(onImport()).catch((reason) =>
@@ -229,6 +249,24 @@ export default function ScheduleForm({
               onClick={() => chooseMetric(option)}
             >
               {option === "remaining" ? "剩餘" : "已使用"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 五個選項排不進「左名稱右選項」那一行，所以名稱自己一行。 */}
+      <div className="setting setting--stacked">
+        <span>自動更新</span>
+        <div className="setting__choice">
+          {POLL_INTERVALS.map(([option, label]) => (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={pollInterval === option}
+              className={pollInterval === option ? "chip chip--on" : "chip"}
+              onClick={() => choosePollInterval(option)}
+            >
+              {label}
             </button>
           ))}
         </div>

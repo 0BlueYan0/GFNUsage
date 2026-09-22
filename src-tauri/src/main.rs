@@ -10,10 +10,15 @@ use gfnusage_lib::AppState;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WindowEvent};
 
-const POLL_INTERVAL: Duration = Duration::from_secs(300);
-
-/// 迴圈的心跳。比輪詢間隔短得多，好讓睡眠喚醒在半分鐘內就被發現。
+/// 迴圈的心跳。比任何一個抓取間隔都短得多，好讓睡眠喚醒在半分鐘內就被發現。
 const TICK: Duration = Duration::from_secs(30);
+
+/// 配速重算的間隔。
+///
+/// 和抓取間隔無關，所以是寫死的：沒抓資料 `A_past` 照樣變大，結論會自己
+/// 翻轉（spec §6.5）。綁在一起的話，抓取間隔設成「關閉」就再也不重算，
+/// 配速與預測會停在啟動時的數字。
+const PACE_INTERVAL: Duration = Duration::from_secs(300);
 
 /// 自動收起後多久之內的系統匣點擊，視為「關閉」而不是「開啟」。
 ///
@@ -197,16 +202,81 @@ fn main() {
                 state.tokens.set_renewer(renewer);
             }
 
-            // 輪詢迴圈。額度只在串流時變動，5 分鐘一次已足夠；
+            // GFN 客戶端的視窗偵測。
+            //
+            // 額度只在串流時變動，而「一場剛玩完」是唯一想立刻看到新數字的
+            // 時刻。把那一刻指出來，定時抓就可以拉長成備援。沒有設定開關。
+            //
+            // 獨立一條 task，不掛在 30 秒心跳上：要分得出「進遊戲」和「退出
+            // 遊戲」就得掃得比心跳密，而掃描只是列舉視窗，不發任何請求。
+            //
+            // 只在 Windows 排。macOS 讀不到別的 app 的視窗標題（見
+            // `watcher::win32`），那邊的抓取來源只剩定時與那幾個事件。
+            #[cfg(windows)]
+            {
+                let handle = app.handle().clone();
+                let state = Arc::clone(&state);
+                tauri::async_runtime::spawn(async move {
+                    let mut probe = gfnusage_lib::watcher::Probe::new();
+                    // 遊戲結束後的補抓。放在這個迴圈裡而不是另開一條 task：
+                    // 連續兩場結束只會留下最後一個到期時間。
+                    let mut settle_at: Option<Instant> = None;
+
+                    loop {
+                        tokio::time::sleep(gfnusage_lib::watcher::SWEEP).await;
+
+                        if settle_at.is_some_and(|due| Instant::now() >= due) {
+                            settle_at = None;
+                            if poll_due(&state) {
+                                let _ = refresh_into_state(&handle, &state).await;
+                            }
+                        }
+
+                        let seen = gfnusage_lib::watcher::win32::current_state();
+                        let Some(change) = probe.observe(seen) else {
+                            continue;
+                        };
+                        // 記列舉出來的狀態，不記視窗標題 —— 標題裡有遊戲名。
+                        let (from, to) = match change {
+                            // 第一次確認。不抓，但要寫出來 —— 不然啟動時 GFN
+                            // 已經開著的話日誌上不會有任何一行，和「完全沒
+                            // 偵測到」分不出來。
+                            gfnusage_lib::watcher::Change::Baseline(state) => {
+                                log::info!("GFN 視窗：起點 {state:?}");
+                                continue;
+                            }
+                            gfnusage_lib::watcher::Change::Moved(from, to) => (from, to),
+                        };
+                        log::info!("GFN 視窗：{from:?} → {to:?}");
+
+                        let trigger = gfnusage_lib::watcher::trigger(from, to);
+                        if trigger == gfnusage_lib::watcher::Trigger::Twice {
+                            settle_at = Some(Instant::now() + gfnusage_lib::watcher::SETTLE);
+                        }
+                        // `poll_due` 這道閘門和面板開啟同一個理由：憑證被拒
+                        // 之後每玩一場就抓一次，等於從前門把 token 上限撞滿。
+                        if trigger == gfnusage_lib::watcher::Trigger::None || !poll_due(&state) {
+                            continue;
+                        }
+                        // 剛抓過就跳過立刻那次。補抓照排 —— 它要的是晚一點
+                        // 的數字，不是重複現在這一份。
+                        if gfnusage_lib::watcher::too_soon(state.last_poll(), Instant::now()) {
+                            continue;
+                        }
+                        let _ = refresh_into_state(&handle, &state).await;
+                    }
+                });
+            }
+
+            // 輪詢迴圈。抓取間隔由使用者在設定頁決定，最長到「關閉」；
             // 串流中的即時警示是 GFN 客戶端自己的職責。
             //
-            // 心跳是 30 秒而不是 5 分鐘，為的是睡眠喚醒（spec §8）：
-            // 筆電闔上八小時再打開，使用者不該盯著一個睡前的數字等滿五分鐘。
+            // 心跳是 30 秒而不是一個抓取間隔，為的是睡眠喚醒（spec §8）：
+            // 筆電闔上八小時再打開，使用者不該盯著一個睡前的數字等滿一輪。
             // 心跳本身不做事，只比對兩個時鐘。
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                // None 代表還沒抓過，所以啟動時第一圈就會抓。
-                let mut last_poll: Option<Instant> = None;
+                let mut last_pace: Option<Instant> = None;
                 let mut beat = (Instant::now(), chrono::Utc::now());
 
                 loop {
@@ -215,21 +285,28 @@ fn main() {
                     let woke = commands::woke_from_sleep(now - beat.0, wall - beat.1);
                     beat = (now, wall);
 
-                    let due = woke
-                        || last_poll.map_or(true, |last| now.duration_since(last) >= POLL_INTERVAL);
-                    if !due {
-                        tokio::time::sleep(TICK).await;
-                        continue;
-                    }
-                    last_poll = Some(now);
+                    // 每一圈現讀，跟 `recompute_pace` 讀 `schedule.json` 同一個
+                    // 作法：設定頁改完立刻生效，不必為它開一條通知管道。
+                    let interval =
+                        gfnusage_lib::store::load_ui_state(&state.ui_state_path()).poll_interval;
+                    // 喚醒即使在「關閉」也抓。關掉的是定時，不是事件 ——
+                    // 睡了八小時之後系統匣掛著睡前的數字，正是這條要擋的。
+                    let fetch_due =
+                        woke || commands::interval_elapsed(state.last_poll(), now, interval);
 
-                    // 喚醒也要走這道閘門。憑證被拒絕後暫停輪詢，是因為每次抓
-                    // 都會為了 401 重試再鑄一顆 token，不停的話一小時就撞上限
-                    // —— 讓喚醒繞過它，就是把那個洞重新打開。
-                    if poll_due(&state) {
+                    // 喚醒也要走 `poll_due` 這道閘門。憑證被拒絕後暫停輪詢，是因為
+                    // 每次抓都會為了 401 重試再鑄一顆 token，不停的話一小時就撞
+                    // 上限 —— 讓喚醒繞過它，就是把那個洞重新打開。
+                    if fetch_due && poll_due(&state) {
+                        last_pace = Some(now);
+                        // `last_poll` 由 `refresh_into_state` 自己更新，因為
+                        // 系統匣與面板那幾條路也要往後推同一個計時器。
                         let _ = refresh_into_state(&handle, &state).await;
-                    } else {
+                    } else if woke
+                        || last_pace.map_or(true, |last| now.duration_since(last) >= PACE_INTERVAL)
+                    {
                         // 沒抓也要重算：A_past 變大會讓配速結論翻轉。
+                        last_pace = Some(now);
                         commands::recompute_pace(&state, chrono::Utc::now());
                         tray::sync(&handle, &state);
                     }
@@ -274,6 +351,7 @@ fn main() {
             commands::import_schedule,
             commands::dismiss_tray_hint,
             commands::set_metric,
+            commands::set_poll_interval,
             commands::app_version,
             commands::get_update_status,
             commands::check_update_now,

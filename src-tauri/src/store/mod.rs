@@ -93,7 +93,7 @@ impl SnapshotRow {
 /// 附加一列到歷史檔。
 ///
 /// 用 append 開檔，不走 `save()` 的「寫暫存檔再改名」：那是整檔置換，
-/// 等於每 5 分鐘把整份歷史讀出來再寫回去，檔案長大之後只會愈來愈慢。
+/// 等於每抓一次就把整份歷史讀出來再寫回去，檔案長大之後只會愈來愈慢。
 /// 而且 `save()` 的 `with_extension("json.tmp")` 會把 `snapshots.json`
 /// 變成 `snapshots.json.tmp`，跟設定檔的暫存檔撞名。
 pub fn append_history(path: &Path, row: &SnapshotRow) -> Result<(), String> {
@@ -115,14 +115,14 @@ pub fn append_history(path: &Path, row: &SnapshotRow) -> Result<(), String> {
 
 /// 找到的那一列離目標時刻超過這麼久，就不拿它當「今天開始時的剩餘量」。
 ///
-/// 代價講明白：這段空白裡玩掉的時間會被算成今天的。程式每 5 分鐘寫一列，
-/// 正常運作時誤差是幾分鐘。設成一小時，是願意把昨晚最後一小時的遊玩算進
+/// 代價講明白：這段空白裡玩掉的時間會被算成今天的。剩餘時數一變就寫一列，
+/// 而遊戲結束時 `watcher` 會抓一次，所以正常運作時誤差是幾分鐘。設成一小時，是願意把昨晚最後一小時的遊玩算進
 /// 今天，換取「機器在午夜前後短暫關掉」這種常見情況仍然算得出答案。
 pub const MAX_HISTORY_GAP: Duration = Duration::hours(1);
 
-/// 只讀檔尾這麼多位元組。一列約 160 bytes、每 5 分鐘一列，一天約 288 列
-/// 也就是 46 KB，256 KB 涵蓋五天多。要找的只是今天午夜前那一列，再往前的
-/// `MAX_HISTORY_GAP` 本來就會擋掉。
+/// 只讀檔尾這麼多位元組。一列約 160 bytes，而只有剩餘時數變動才寫一列，
+/// 所以抓得再勤一天也就幾十列，256 KB 涵蓋好幾十天。要找的只是今天午夜前
+/// 那一列，再往前的 `MAX_HISTORY_GAP` 本來就會擋掉。
 ///
 /// 不整份讀進來：歷史只增不減，跑滿一年是 17 MB，而這個函式每一輪都會叫。
 const TAIL_BYTES: u64 = 256 * 1024;
@@ -189,6 +189,57 @@ pub enum Metric {
     Used,
 }
 
+/// 定時抓取的間隔。
+///
+/// 額度只在串流時變動，而串流的開始與結束由 `watcher` 從 GFN 的視窗標題
+/// 看得出來，所以這個間隔是備援不是主力：在別台裝置玩、用瀏覽器版玩、
+/// 或者視窗偵測失效的時候，只有它抓得到。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PollInterval {
+    /// 完全不定時抓。只剩手動、開面板、睡眠喚醒、GFN 視窗轉換這幾種來源。
+    #[serde(rename = "off")]
+    Off,
+    /// 預設。比原本寫死的 5 分鐘長得多，又短到足以接住視窗偵測漏掉的那些場。
+    #[serde(rename = "30m")]
+    #[default]
+    Min30,
+    #[serde(rename = "1h")]
+    Hour1,
+    #[serde(rename = "6h")]
+    Hour6,
+    #[serde(rename = "24h")]
+    Hour24,
+}
+
+impl PollInterval {
+    /// `None` 代表不定時抓。
+    pub fn duration(self) -> Option<std::time::Duration> {
+        let minutes = match self {
+            Self::Off => return None,
+            Self::Min30 => 30,
+            Self::Hour1 => 60,
+            Self::Hour6 => 360,
+            Self::Hour24 => 1440,
+        };
+        Some(std::time::Duration::from_secs(minutes * 60))
+    }
+
+    /// 超過這麼久沒抓到，系統匣的數字變淡（spec §7.2「資料過期」）。
+    ///
+    /// 跟著間隔走而不是固定 30 分鐘：間隔設成 6 小時的時候，資料 40 分鐘舊
+    /// 是正常的，那時候變淡等於一直淡著，使用者就不再把「淡」當訊號了。
+    pub fn stale_after(self) -> Duration {
+        match self {
+            // 沒有定時抓，只剩手動與視窗事件。一天沒更新過才算舊。
+            Self::Off => Duration::hours(24),
+            Self::Min30 => Duration::hours(1),
+            Self::Hour1 => Duration::hours(2),
+            Self::Hour6 => Duration::hours(12),
+            Self::Hour24 => Duration::hours(48),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct UiState {
@@ -210,6 +261,12 @@ pub struct UiState {
     /// 記版本而不是記一個布林：關掉的是「0.1.1 出來了」這句話，下一版出來
     /// 還是要講。
     pub update_dismissed: String,
+
+    /// 定時抓取的間隔。
+    ///
+    /// 和 `metric` 同一個理由放這裡：這台機器要多勤地抓，跟不可遊玩時段是
+    /// 兩件事，不該跟著 `schedule.json` 匯出到別台。
+    pub poll_interval: PollInterval,
 }
 
 pub fn ui_state_path(dir: &Path) -> PathBuf {
@@ -219,8 +276,9 @@ pub fn ui_state_path(dir: &Path) -> PathBuf {
 /// 讀取 UI 狀態。檔案不存在、壞掉、讀不動，一律回預設值。
 ///
 /// 和設定檔的處理刻意不同：設定讀壞了要講出來（少算一段不可遊玩時段會讓
-/// 預測悄悄失準），但這裡面只有兩個布林值，為它們在面板上擺一行錯誤訊息
-/// 完全不成比例 —— 最壞的後果是提示多出現一次。
+/// 預測悄悄失準），但這裡面都是看得見的偏好，為它們在面板上擺一行錯誤訊息
+/// 完全不成比例 —— 最壞的後果是提示多出現一次、抓取間隔回到預設值，
+/// 兩者使用者在設定頁都看得到也改得回來。
 pub fn load_ui_state(path: &Path) -> UiState {
     fs::read_to_string(path)
         .ok()
@@ -230,8 +288,9 @@ pub fn load_ui_state(path: &Path) -> UiState {
 
 /// 寫入 UI 狀態。
 ///
-/// 不走設定檔那套「寫暫存檔再改名」：整份檔案就兩個布林值，寫壞了下次讀
-/// 不出來就回預設值，代價只是提示多出現一次。設定檔值得那道保險，這個不值得。
+/// 不走設定檔那套「寫暫存檔再改名」：整份檔案就幾個純量，寫壞了下次讀
+/// 不出來就回預設值，而那些預設值在設定頁上看得到、也改得回來。
+/// 設定檔值得那道保險，這個不值得。
 pub fn save_ui_state(path: &Path, ui: &UiState) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("建立設定目錄失敗：{e}"))?;
@@ -364,11 +423,50 @@ mod tests {
             metric: Metric::Used,
             device_id: "105c3409-aace-4e9b-a3dd-30260a61a188".into(),
             update_dismissed: "0.1.1".into(),
+            poll_interval: PollInterval::Hour6,
         };
 
         save_ui_state(&path, &ui).unwrap();
 
         assert_eq!(load_ui_state(&path), ui);
+    }
+
+    /// 升級上來的人的檔案裡沒有 `pollInterval`。`#[serde(default)]` 要接住它，
+    /// 不然整份檔案 parse 失敗，連 `deviceId` 都一起回預設值 —— 那會讓
+    /// 下一次登入換一個裝置識別碼。
+    #[test]
+    fn an_older_ui_state_file_keeps_its_other_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ui_state_path(dir.path());
+        fs::write(
+            &path,
+            r#"{"firstRunDone":true,"trayHintDismissed":false,"metric":"used",
+                "deviceId":"105c3409-aace-4e9b-a3dd-30260a61a188","updateDismissed":""}"#,
+        )
+        .unwrap();
+
+        let ui = load_ui_state(&path);
+
+        assert_eq!(ui.metric, Metric::Used);
+        assert_eq!(ui.device_id, "105c3409-aace-4e9b-a3dd-30260a61a188");
+        assert_eq!(ui.poll_interval, PollInterval::Min30);
+    }
+
+    /// 過期門檻跟著間隔走。間隔比門檻長的話圖示會一直淡著，那個訊號就沒用了。
+    #[test]
+    fn the_stale_threshold_outlasts_the_interval() {
+        for interval in [
+            PollInterval::Min30,
+            PollInterval::Hour1,
+            PollInterval::Hour6,
+            PollInterval::Hour24,
+        ] {
+            let gap = Duration::from_std(interval.duration().unwrap()).unwrap();
+            assert!(interval.stale_after() > gap, "{interval:?}");
+        }
+        // 不定時抓的時候沒有間隔可以比，門檻是「一天沒更新過」。
+        assert_eq!(PollInterval::Off.duration(), None);
+        assert_eq!(PollInterval::Off.stale_after(), Duration::hours(24));
     }
 
     /// 第一次啟動時檔案根本不存在。這不是錯誤，也不該在面板上留下訊息 ——

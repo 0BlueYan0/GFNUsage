@@ -153,6 +153,9 @@ function Quota({
 /** 後端在面板顯示出來時送的事件。字串要和 `panel::SHOWN_EVENT` 一致。 */
 const PANEL_SHOWN = "panel-shown";
 
+/** 後端抓到新資料了。字串要和 `panel::REFRESHED_EVENT` 一致。 */
+const DATA_REFRESHED = "data-refreshed";
+
 interface AboutData {
   version: string | null;
   updateVersion: string | null;
@@ -222,9 +225,15 @@ export default function App() {
       void load();
       void refreshInBackground();
     });
+    // 背景抓完（定時、GFN 視窗轉換、系統匣「立即更新」）會送這個。
+    // 只重讀，不再抓 —— 抓完會再送一次事件，那就是無窮迴圈。
+    const refreshed = listen(DATA_REFRESHED, () => {
+      void load();
+    });
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
       void shown.then((stop) => stop());
+      void refreshed.then((stop) => stop());
     };
   }, [load, refreshInBackground]);
 
@@ -398,6 +407,10 @@ export default function App() {
         onClose={() => setSchedule(null)}
         metric={data.metric}
         onMetric={(next) => run(() => invoke("set_metric", { metric: next }))}
+        pollInterval={data.pollInterval}
+        onPollInterval={(next) =>
+          run(() => invoke("set_poll_interval", { interval: next }))
+        }
         // 自動儲存，所以不走 `run()`：它會把按鈕鎖起來，打字時一路閃。
         // 也不關掉表單 —— 存檔不再是離開的動作了。
         // 不吞錯誤：reject 會被表單接住，顯示在匯出入鍵上方。

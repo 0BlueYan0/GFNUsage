@@ -17,9 +17,6 @@ pub const TRAY_ID: &str = "main";
 
 const IDLE_TOOLTIP: &str = "GFNUsage：尚未取得資料";
 
-/// 上次成功抓取距今超過此值，數字變淡（spec §7.2「資料過期」）。
-pub const STALE_AFTER_MINUTES: i64 = 30;
-
 /// 系統匣該長什麼樣子。純資料：由 `face()` 算出，`apply_face()` 畫上去。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayFace {
@@ -36,12 +33,16 @@ pub struct TrayFace {
 /// 優先順序：需重新登入 → 沒資料 → 有資料（過期就變淡）。
 /// 錯誤一律寫進 tooltip，圖示上的數字則留著 —— 一次失敗的輪詢不該把上次的
 /// 好資料藏起來；但憑證死了就不能再一副數字很正常的樣子。
+///
+/// `stale_after` 由呼叫端從抓取間隔換算（`PollInterval::stale_after`），
+/// 不寫死在這裡：間隔設成 6 小時的時候，資料 40 分鐘舊是正常的。
 pub fn face(
     snapshot: Option<&QuotaSnapshot>,
     pace: Option<&PaceReport>,
     error: Option<&str>,
     needs_login: bool,
     now: DateTime<Utc>,
+    stale_after: Duration,
 ) -> TrayFace {
     let muted = icon::state_color(DisplayState::FreeTier);
 
@@ -73,7 +74,7 @@ pub fn face(
     } else {
         snapshot.tray_label()
     };
-    let stale = now - snapshot.fetched_at > Duration::minutes(STALE_AFTER_MINUTES);
+    let stale = now - snapshot.fetched_at > stale_after;
     let base = icon::state_color(state);
 
     let mut tooltip = if snapshot.time_capped {
@@ -135,6 +136,11 @@ pub fn sync<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
     let pace = state.pace.lock().unwrap().clone();
     let error = state.display_error();
     let needs_login = state.needs_login.load(Ordering::SeqCst);
+    // 現讀，跟 `panel_data` 同一個作法。不在 `AppState` 裡再放一份快取：
+    // 兩份來源遲早會有一份忘了更新。
+    let stale_after = crate::store::load_ui_state(&state.ui_state_path())
+        .poll_interval
+        .stale_after();
     apply_face(
         &tray,
         &face(
@@ -143,6 +149,7 @@ pub fn sync<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
             error.as_deref(),
             needs_login,
             Utc::now(),
+            stale_after,
         ),
     );
 }
@@ -165,9 +172,14 @@ mod tests {
         QuotaSnapshot::from_subscription(&sub, fetched_at)
     }
 
+    /// 預設間隔換算出來的過期門檻，一小時。
+    fn stale() -> Duration {
+        crate::store::PollInterval::default().stale_after()
+    }
+
     #[test]
     fn idle_face_when_nothing_has_been_fetched() {
-        let f = face(None, None, None, false, now());
+        let f = face(None, None, None, false, now(), stale());
         assert_eq!(f.label, "–");
         assert_eq!(f.title, None);
         assert_eq!(f.tooltip, IDLE_TOOLTIP);
@@ -175,7 +187,7 @@ mod tests {
 
     #[test]
     fn healthy_snapshot_shows_hours_in_the_state_color() {
-        let f = face(Some(&snapshot(now())), None, None, false, now());
+        let f = face(Some(&snapshot(now())), None, None, false, now(), stale());
         assert_eq!(f.label, "103");
         assert_eq!(f.title.as_deref(), Some("103h"));
         assert_eq!(f.color, icon::state_color(DisplayState::Normal));
@@ -191,6 +203,7 @@ mod tests {
             Some("需要重新登入"),
             true,
             now(),
+            stale(),
         );
         assert_eq!(f.label, "!");
         assert_eq!(f.color, icon::state_color(DisplayState::FreeTier));
@@ -207,6 +220,7 @@ mod tests {
             Some("網路錯誤：離線"),
             false,
             now(),
+            stale(),
         );
         assert_eq!(f.label, "103");
         assert_eq!(f.color, icon::state_color(DisplayState::Normal));
@@ -214,16 +228,17 @@ mod tests {
         assert!(f.tooltip.contains("資料時間"), "{}", f.tooltip);
     }
 
-    /// spec §7.2：上次成功抓取距今超過 30 分鐘，數字變淡。
+    /// spec §7.2：上次成功抓取距今超過門檻，數字變淡。
     #[test]
     fn a_stale_snapshot_is_dimmed() {
-        let fetched = now() - Duration::minutes(STALE_AFTER_MINUTES + 1);
+        let fetched = now() - stale() - Duration::minutes(1);
         let f = face(
             Some(&snapshot(fetched)),
             None,
             Some("網路錯誤：離線"),
             false,
             now(),
+            stale(),
         );
         assert_eq!(f.label, "103");
         assert_eq!(
@@ -232,9 +247,37 @@ mod tests {
         );
     }
 
+    /// 同一份資料，間隔拉長就不算過期了。
+    ///
+    /// 沒有這條的話「淡」會變成常態：使用者選 6 小時，而門檻若還寫死 30 分鐘，
+    /// 圖示幾乎永遠是淡的，那個訊號就不再指出任何事情。
+    #[test]
+    fn a_longer_interval_pushes_the_staleness_threshold_out() {
+        use crate::store::PollInterval;
+
+        let fetched = now() - Duration::hours(3);
+        let dimmed = |interval: PollInterval| {
+            face(
+                Some(&snapshot(fetched)),
+                None,
+                None,
+                false,
+                now(),
+                interval.stale_after(),
+            )
+            .color
+                == icon::dimmed(icon::state_color(DisplayState::Normal))
+        };
+
+        assert!(dimmed(PollInterval::Min30));
+        assert!(dimmed(PollInterval::Hour1));
+        assert!(!dimmed(PollInterval::Hour6));
+        assert!(!dimmed(PollInterval::Off));
+    }
+
     #[test]
     fn an_error_without_a_snapshot_goes_in_the_tooltip() {
-        let f = face(None, None, Some("網路錯誤：離線"), false, now());
+        let f = face(None, None, Some("網路錯誤：離線"), false, now(), stale());
         assert_eq!(f.label, "–");
         assert!(f.tooltip.contains("網路錯誤：離線"), "{}", f.tooltip);
     }
@@ -258,7 +301,7 @@ mod tests {
             today_budget_minutes: None,
             note: None,
         };
-        let f = face(Some(&snap), Some(&report), None, false, now());
+        let f = face(Some(&snap), Some(&report), None, false, now(), stale());
         assert_eq!(f.label, "103");
         assert_eq!(f.color, icon::state_color(DisplayState::OverPace));
         assert_eq!(
@@ -275,7 +318,7 @@ mod tests {
         sub.current_subscription_state.is_game_play_allowed = false;
         let snap = QuotaSnapshot::from_subscription(&sub, now());
 
-        let f = face(Some(&snap), None, None, false, now());
+        let f = face(Some(&snap), None, None, false, now(), stale());
         assert_eq!(f.label, "!");
         assert_eq!(f.color, icon::state_color(DisplayState::Exhausted));
         assert!(f.tooltip.contains("0 分鐘"), "{}", f.tooltip);

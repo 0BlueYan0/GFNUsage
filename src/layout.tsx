@@ -71,6 +71,7 @@ const DATA: PanelData = {
   showTrayHint: false,
   loginPending: false,
   metric: "remaining",
+  pollInterval: "30m",
   // 驗「玩的遊戲多了」那一頁會不會被切掉，以及標題有沒有釘住。實測一期 38 場。
   recentSessions: Array.from({ length: 40 }, (_, i) =>
     session(

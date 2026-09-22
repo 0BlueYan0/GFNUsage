@@ -18,6 +18,14 @@ pub const PANEL_LABEL: &str = "main";
 /// 面板寫「沒有資料」，而且按了「立即更新」以外的方式都不會變。
 pub const SHOWN_EVENT: &str = "panel-shown";
 
+/// 後端剛抓到新資料，前端該重讀一次。
+///
+/// 沒有這個事件的話，面板只在被叫出來時重讀，開著的期間數字不會變。
+/// GFN 視窗偵測會在一場玩完的兩分鐘後抓，而那時使用者多半正開著面板。
+///
+/// 收到這個事件只能重讀，不能再抓一次：抓完會再送一次事件，那是迴圈。
+pub const REFRESHED_EVENT: &str = "data-refreshed";
+
 /// 面板與螢幕可用區邊緣的間距。
 const PANEL_MARGIN: i32 = 12;
 
