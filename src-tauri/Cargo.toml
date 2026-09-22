@@ -41,6 +41,17 @@ tauri-plugin-updater = "2"
 tauri-plugin-autostart = "2"
 log = "0.4"
 
+# GFN 客戶端的視窗偵測（`watcher::win32`）。用 windows-sys 不用 windows：
+# 只要六個 FFI 函式，沒有 COM，也不會把 MSRV 頂到 rust-version 之上。
+# 版本跟著 tauri 已經拉進來的那份走，免得編兩份。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Threading",
+  "Win32_System_Diagnostics_ToolHelp",
+] }
+
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"

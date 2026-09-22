@@ -10,6 +10,7 @@ pub mod store;
 pub mod tray;
 pub mod trend;
 pub mod update;
+pub mod watcher;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -75,7 +76,7 @@ pub struct AppState {
     ///
     /// 存下來是因為 `sessions` 抓不到時是 `None`，而那是 `used_today` 要的
     /// 語意（見上面 `sessions` 的註解），不能為了圖去改它。圖只要上次那份
-    /// 還在就照畫，免得一次抓失敗就讓整張圖消失五分鐘。
+    /// 還在就照畫，免得一次抓失敗就讓整張圖消失到下一次抓為止。
     pub trend: Mutex<Vec<crate::trend::DailyPoint>>,
 
     /// 設定的記憶體快取。每個輪詢週期會從檔案重讀，手動改檔案不必重開程式。
@@ -113,6 +114,15 @@ pub struct AppState {
     /// 打架 —— 面板開著時點圖示，會先收起再立刻重開，等於關不掉。
     /// 記下收起的時間，讓緊接著的那次點擊知道自己是關閉動作而不是開啟動作。
     pub last_auto_hide: Mutex<Option<Instant>>,
+
+    /// 上次開始抓取的時間點。定時器從它算間隔。
+    ///
+    /// 放共用狀態而不是輪詢迴圈的區域變數：系統匣「立即更新」、開面板、
+    /// GFN 視窗轉換都會抓，抓完定時器要跟著往後推。不然剛抓過幾秒之後
+    /// 定時器又抓一次，而間隔拉長之後這種重複更明顯。
+    ///
+    /// `None` 代表這個行程還沒抓過，所以啟動時第一圈就會抓。
+    pub last_poll: Mutex<Option<Instant>>,
 }
 
 impl AppState {
@@ -165,7 +175,12 @@ impl AppState {
             login_pending: Arc::new(AtomicBool::new(false)),
             login_cancel: tokio::sync::watch::Sender::new(0),
             last_auto_hide: Mutex::new(None),
+            last_poll: Mutex::new(None),
         }
+    }
+
+    pub fn last_poll(&self) -> Option<Instant> {
+        *self.last_poll.lock().unwrap()
     }
 
     pub fn schedule_path(&self) -> PathBuf {
