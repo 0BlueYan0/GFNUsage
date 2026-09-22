@@ -141,8 +141,6 @@ jobs:
           releaseBody: |
             ## English
 
-            ### What changed
-
             ${{ needs.guard.outputs.notes_en }}
 
             ### Windows
@@ -165,8 +163,6 @@ jobs:
             ---
 
             ## 繁體中文
-
-            ### 這一版改了什麼
 
             ${{ needs.guard.outputs.notes_zh }}
 
