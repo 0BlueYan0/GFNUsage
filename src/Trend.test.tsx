@@ -61,9 +61,33 @@ describe("Trend", () => {
   it("metric 換邊時第一點上下翻", () => {
     const remaining = firstPoint(draw(daily()), ".trend__actual");
     const used = firstPoint(draw(daily(), "used"), ".trend__actual");
-    expect(remaining.y).toBe(2);
-    expect(used.y).toBe(62);
+    expect(remaining.y).toBe(8);
+    expect(used.y).toBe(64);
     expect(remaining.x).toBe(used.x);
+  });
+
+  /// 沒有刻度就只看得出線在往下走，看不出走到哪。
+  it("縱軸標出 100、50、0 三個刻度", () => {
+    const ticks = Array.from(
+      draw(daily()).querySelectorAll(".trend__tick"),
+      (node) => node.textContent,
+    );
+    expect(ticks).toEqual(["100%", "50%", "0%"]);
+  });
+
+  /// 刻度的橫線要跟刻度的字在同一個高度，對不上的話數字是騙人的。
+  it("刻度的橫線與字同高", () => {
+    const container = draw(daily());
+    const grids = Array.from(
+      container.querySelectorAll(".trend__grid"),
+      (node) => node.getAttribute("y1"),
+    );
+    const labels = Array.from(
+      container.querySelectorAll(".trend__tick"),
+      (node) => node.getAttribute("y"),
+    );
+    expect(grids).toEqual(labels);
+    expect(grids).toEqual(["8", "36", "64"]);
   });
 
   /// 額度用完之後不再往前畫。畫下去會沿著邊緣走成一條平的，看起來像

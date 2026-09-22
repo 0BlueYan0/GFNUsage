@@ -3,11 +3,17 @@ import type { DailyPoint, DisplayState, Metric } from "./types";
 
 /** 畫布尺寸。面板 360 寬扣掉左右各 16px 的 padding 剩 328。 */
 const WIDTH = 328;
-const HEIGHT = 64;
-/** 上下左右各留 2px，2px 的線才不會被畫布邊緣切掉一半。 */
-const INSET = 2;
+const HEIGHT = 72;
+/** 右邊留 2px，2px 的線才不會被畫布邊緣切掉一半。 */
+const INSET_X = 2;
+/** 上下各留 8px 放刻度的字，置中對齊時字才不會被切到。 */
+const INSET_Y = 8;
+/** 左邊讓給刻度的字。「100%」在 11px 下約 28px 寬，再加一點間距。 */
+const GUTTER = 34;
 /** 今天那一點的半徑。 */
 const TODAY_RADIUS = 3;
+/** 縱軸刻度，由上而下。 */
+const TICKS = [1, 0.5, 0];
 
 /**
  * 本期用量走勢。
@@ -41,12 +47,14 @@ export default function Trend({
   if (daily.length < 2 || totalMinutes <= 0) return null;
 
   const x = (index: number) =>
-    INSET + (index / (daily.length - 1)) * (WIDTH - INSET * 2);
+    GUTTER + (index / (daily.length - 1)) * (WIDTH - GUTTER - INSET_X);
+
+  const at = (ratio: number) =>
+    HEIGHT - INSET_Y - ratio * (HEIGHT - INSET_Y * 2);
 
   const y = (used: number) => {
     const shown = metric === "used" ? used : totalMinutes - used;
-    const ratio = Math.min(Math.max(shown / totalMinutes, 0), 1);
-    return HEIGHT - INSET - ratio * (HEIGHT - INSET * 2);
+    return at(Math.min(Math.max(shown / totalMinutes, 0), 1));
   };
 
   const line = (pick: (point: DailyPoint) => number | null) => {
@@ -80,16 +88,29 @@ export default function Trend({
       role="img"
       aria-label="本期用量走勢"
     >
-      {/* 「用完」那條高度。看剩餘時它在底部，看已使用時在頂部，同一條
-          運算式兩邊都對。沒有它的話線就只是浮在一個空框裡，看不出離用完
-          還有多遠。 */}
-      <line
-        className="trend__limit"
-        x1={0}
-        x2={WIDTH}
-        y1={y(totalMinutes)}
-        y2={y(totalMinutes)}
-      />
+      {/* 刻度是佔月額度的百分比，跟著 metric 走：看剩餘時 0% 是用完，
+          看已使用時 100% 是用完。分母就是大字旁邊那個「/ 115 小時」。
+          沒有刻度的話線只是浮在一個空框裡，看得出往下走，看不出走到哪。 */}
+      {TICKS.map((ratio) => (
+        <g key={ratio}>
+          <line
+            className="trend__grid"
+            x1={GUTTER}
+            x2={WIDTH - INSET_X}
+            y1={at(ratio)}
+            y2={at(ratio)}
+          />
+          <text
+            className="trend__tick"
+            x={GUTTER - 6}
+            y={at(ratio)}
+            textAnchor="end"
+            dominantBaseline="middle"
+          >
+            {Math.round(ratio * 100)}%
+          </text>
+        </g>
+      ))}
       {projected && <polyline className="trend__projected" points={projected} />}
       {actual && <polyline className="trend__actual" points={actual} />}
       {today !== null && (
