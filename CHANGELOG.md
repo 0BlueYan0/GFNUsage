@@ -6,8 +6,10 @@
 
 ### Added
 
-- The main panel charts the period below the pace numbers: how the quota has
-  run down, and where it is heading. Hover the chart for the month-end figures.
+- The main panel charts the period: how the quota has run down, and where it is
+  heading. Hover the chart for the month-end figures.
+- The progress bar marks where your pace should be. Hover the bar for the
+  figures behind it.
 
 ### Changed
 
