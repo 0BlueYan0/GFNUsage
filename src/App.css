@@ -525,14 +525,14 @@ textarea {
 }
 
 /* 本期用量走勢。
-   高度寫死 72px。`.panel__body` 是唯一會捲的那一層，圖再高就把配速那幾列
+   高度寫死 64px。`.panel__body` 是唯一會捲的那一層，圖再高就把配速那幾列
    推到捲軸下面。顏色掛在 svg 上讓兩個標記都吃 `currentColor`，這樣狀態
    修飾詞只要一組。 */
 .trend {
   display: block;
   flex: 0 0 auto;
   width: 100%;
-  height: 72px;
+  height: 64px;
   color: var(--accent);
 }
 
@@ -572,15 +572,17 @@ textarea {
   fill: currentColor;
 }
 
-/* 縱軸刻度的橫線。 */
-.trend__grid {
+/* 「用完」那條高度。看剩餘時在底部，看已使用時在頂部。 */
+.trend__limit {
   stroke: var(--line);
   stroke-width: 1;
   /* 畫布寬度會被縮放，1px 的線落在半個像素上就被抹成幾乎看不見。 */
   shape-rendering: crispEdges;
 }
 
-.trend__tick {
+/* 今天與期末的百分比。字用文字色，不用線的顏色 —— 線旁邊已經有顏色了，
+   字再跟著上色只是同一件事講兩次。 */
+.trend__value {
   fill: var(--fg-muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;

@@ -3,17 +3,21 @@ import type { DailyPoint, DisplayState, Metric } from "./types";
 
 /** 畫布尺寸。面板 360 寬扣掉左右各 16px 的 padding 剩 328。 */
 const WIDTH = 328;
-const HEIGHT = 72;
-/** 右邊留 2px，2px 的線才不會被畫布邊緣切掉一半。 */
+const HEIGHT = 64;
+/** 左右留 2px，2px 的線才不會被畫布邊緣切掉一半。 */
 const INSET_X = 2;
-/** 上下各留 8px 放刻度的字，置中對齊時字才不會被切到。 */
-const INSET_Y = 8;
-/** 左邊讓給刻度的字。「100%」在 11px 下約 28px 寬，再加一點間距。 */
-const GUTTER = 34;
+/** 上下留 5px，線與今天那一點才不會貼著邊。 */
+const INSET_Y = 5;
 /** 今天那一點的半徑。 */
 const TODAY_RADIUS = 3;
-/** 縱軸刻度，由上而下。 */
-const TICKS = [1, 0.5, 0];
+/** 百分比離它標的那一點多遠。 */
+const LABEL_ABOVE = -8;
+const LABEL_BELOW = 15;
+/** 這麼靠邊的點，字要改成靠邊對齊，不然會超出畫布。 */
+const EDGE = 24;
+
+/** 落在畫布上的一個點。 */
+type Mark = { index: number; used: number };
 
 /**
  * 本期用量走勢。
@@ -47,39 +51,62 @@ export default function Trend({
   if (daily.length < 2 || totalMinutes <= 0) return null;
 
   const x = (index: number) =>
-    GUTTER + (index / (daily.length - 1)) * (WIDTH - GUTTER - INSET_X);
+    INSET_X + (index / (daily.length - 1)) * (WIDTH - INSET_X * 2);
 
-  const at = (ratio: number) =>
-    HEIGHT - INSET_Y - ratio * (HEIGHT - INSET_Y * 2);
-
-  const y = (used: number) => {
+  const ratio = (used: number) => {
     const shown = metric === "used" ? used : totalMinutes - used;
-    return at(Math.min(Math.max(shown / totalMinutes, 0), 1));
+    return Math.min(Math.max(shown / totalMinutes, 0), 1);
   };
 
-  const line = (pick: (point: DailyPoint) => number | null) => {
-    const parts: string[] = [];
+  const y = (used: number) =>
+    HEIGHT - INSET_Y - ratio(used) * (HEIGHT - INSET_Y * 2);
+
+  const series = (pick: (point: DailyPoint) => number | null) => {
+    const drawn: Mark[] = [];
     for (const [index, point] of daily.entries()) {
       const used = pick(point);
       if (used === null) continue;
-      parts.push(`${x(index).toFixed(1)},${y(used).toFixed(1)}`);
+      drawn.push({ index, used });
       // 額度用完之後不再往前畫。畫下去會沿著邊緣走成一條平的，看起來像
       // 「後來不玩了」，而實際上是那天之後就沒得玩了。
       if (used >= totalMinutes) break;
     }
-    return parts.join(" ");
+    return drawn;
   };
 
-  const actual = line((point) => point.usedMinutes);
-  const projected = line((point) => point.projectedUsedMinutes);
+  const path = (drawn: Mark[]) =>
+    drawn.map((mark) => `${x(mark.index).toFixed(1)},${y(mark.used).toFixed(1)}`).join(" ");
+
+  const actual = series((point) => point.usedMinutes);
+  const projected = series((point) => point.projectedUsedMinutes);
 
   // 今天是最後一個有實線值的點。標出來有兩個作用：實線與虛線的交界看得見，
   // 而本期第一天只有一個實線的點，沒有這一點的話那天整條線是空的。
-  const todayIndex = daily.reduce(
-    (found, point, index) => (point.usedMinutes === null ? found : index),
-    -1,
-  );
-  const today = daily[todayIndex]?.usedMinutes ?? null;
+  const today: Mark | null = actual[actual.length - 1] ?? null;
+  const end: Mark | null = projected[projected.length - 1] ?? null;
+
+  /**
+   * 一個點上的百分比。
+   *
+   * 標在點的哪一邊看它在上半部還是下半部：線從今天往期末走，往下走時今天
+   * 在上半部、期末在下半部，兩個字各自落在線的空邊，不會壓到線。往上走時
+   * 兩邊同時反過來，同一條規則還是對的。
+   */
+  const value = (mark: Mark, key: string) => {
+    const px = x(mark.index);
+    const py = y(mark.used);
+    return (
+      <text
+        key={key}
+        className="trend__value"
+        x={px}
+        y={py + (py > HEIGHT / 2 ? LABEL_ABOVE : LABEL_BELOW)}
+        textAnchor={px < EDGE ? "start" : px > WIDTH - EDGE ? "end" : "middle"}
+      >
+        {Math.round(ratio(mark.used) * 100)}%
+      </text>
+    );
+  };
 
   return (
     <svg
@@ -88,39 +115,33 @@ export default function Trend({
       role="img"
       aria-label="本期用量走勢"
     >
-      {/* 刻度是佔月額度的百分比，跟著 metric 走：看剩餘時 0% 是用完，
-          看已使用時 100% 是用完。分母就是大字旁邊那個「/ 115 小時」。
-          沒有刻度的話線只是浮在一個空框裡，看得出往下走，看不出走到哪。 */}
-      {TICKS.map((ratio) => (
-        <g key={ratio}>
-          <line
-            className="trend__grid"
-            x1={GUTTER}
-            x2={WIDTH - INSET_X}
-            y1={at(ratio)}
-            y2={at(ratio)}
-          />
-          <text
-            className="trend__tick"
-            x={GUTTER - 6}
-            y={at(ratio)}
-            textAnchor="end"
-            dominantBaseline="middle"
-          >
-            {Math.round(ratio * 100)}%
-          </text>
-        </g>
-      ))}
-      {projected && <polyline className="trend__projected" points={projected} />}
-      {actual && <polyline className="trend__actual" points={actual} />}
-      {today !== null && (
+      {/* 「用完」那條高度。看剩餘時它在底部，看已使用時在頂部，同一條
+          運算式兩邊都對。兩個百分比講的是線走到哪，這條講的是走到哪裡
+          就沒得玩了。 */}
+      <line
+        className="trend__limit"
+        x1={0}
+        x2={WIDTH}
+        y1={y(totalMinutes)}
+        y2={y(totalMinutes)}
+      />
+      {projected.length > 1 && (
+        <polyline className="trend__projected" points={path(projected)} />
+      )}
+      {actual.length > 1 && (
+        <polyline className="trend__actual" points={path(actual)} />
+      )}
+      {today && (
         <circle
           className="trend__today"
-          cx={x(todayIndex).toFixed(1)}
-          cy={y(today).toFixed(1)}
+          cx={x(today.index).toFixed(1)}
+          cy={y(today.used).toFixed(1)}
           r={TODAY_RADIUS}
         />
       )}
+      {today && value(today, "today")}
+      {/* 預測只剩今天那一點時（速度是 0，或還沒有預測）不重複標一次。 */}
+      {end && end.index !== today?.index && value(end, "end")}
     </svg>
   );
 }
