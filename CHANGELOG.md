@@ -15,6 +15,8 @@
 
 - The forecast follows the last seven days of play instead of averaging the
   whole period.
+- The tray icon and the panel turn red when the forecast runs past the quota,
+  not only when you are past the mark on the bar.
 
 ## [0.1.3] - 2026-09-22
 

@@ -222,9 +222,24 @@ pub fn display_state(snapshot: &QuotaSnapshot, pace: Option<&PaceReport>) -> Dis
     if snapshot.state != DisplayState::Normal {
         return snapshot.state;
     }
-    match pace.and_then(|report| report.over_pace_minutes) {
-        Some(over) if over > 0.0 => DisplayState::OverPace,
-        _ => DisplayState::Normal,
+    let Some(report) = pace else {
+        return DisplayState::Normal;
+    };
+
+    // 兩個都能讓它轉紅，而且問的是不同的問題：配速門檻問「到現在為止有沒有
+    // 超出預算」，預測問「照最近七天的速度走會不會爆」。
+    //
+    // 只聽前者是舊的寫法。那時 `r = U / A_past`，代進去 `overshoot > 0` 會
+    // 化簡成 `over_pace > 0`，兩者永遠同號，所以只聽一個看不出差別。換成
+    // 窗口式的燃燒率之後它們會分家：期初玩得少、最近一週每天都玩，配速說
+    // 還在門檻內而預測已經超支。只聽前者的話系統匣還是綠的，而走勢圖那條
+    // 虛線已經穿過底線。
+    let over_budget = report.over_pace_minutes.is_some_and(|over| over > 0.0);
+    let will_overshoot = report.overshoot_minutes.is_some_and(|over| over > 0.0);
+    if over_budget || will_overshoot {
+        DisplayState::OverPace
+    } else {
+        DisplayState::Normal
     }
 }
 
@@ -616,6 +631,31 @@ mod tests {
         let snap = snapshot(6000, 3000);
         let r = report(6000, 3000);
         assert_eq!(display_state(&snap, Some(&r)), DisplayState::OverPace);
+    }
+
+    /// 這是換成窗口式燃燒率之後才可能出現的情況，也是這條規則的由來。
+    /// 本期到現在只用了 1800 分鐘，門檻是 2000，配速說還在預算內。但那
+    /// 1800 全在最近七天，照這個速度走會超支，所以要轉紅。
+    #[test]
+    fn a_projected_overshoot_turns_red_even_when_inside_the_budget() {
+        let snap = snapshot(6000, 4200);
+        let r = report_with(6000, 4200, last_week(1800.0));
+        assert!(
+            r.over_pace_minutes.expect("配速門檻算得出來") < 0.0,
+            "配速還在門檻內"
+        );
+        assert!(r.overshoot_minutes.expect("有預測") > 0.0, "預測會超支");
+        assert_eq!(display_state(&snap, Some(&r)), DisplayState::OverPace);
+    }
+
+    /// 兩個都沒事才是正常。少了這條，上面那條可能只是因為它永遠回 OverPace。
+    #[test]
+    fn inside_the_budget_and_no_overshoot_stays_normal() {
+        let snap = snapshot(6000, 4500);
+        let r = report_with(6000, 4500, last_week(0.0));
+        assert!(r.over_pace_minutes.expect("配速門檻算得出來") < 0.0);
+        assert!(r.overshoot_minutes.expect("有預測") < 0.0);
+        assert_eq!(display_state(&snap, Some(&r)), DisplayState::Normal);
     }
 
     #[test]
