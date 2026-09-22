@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_dialog::DialogExt;
@@ -62,6 +62,13 @@ pub struct PanelData {
 /// 上界，免得某個月玩得特別兇時每次開面板都把整份清單搬過去。
 /// 一個計費期實測是 38 場。
 const RECENT_SESSIONS: usize = 100;
+
+/// 真實燃燒率取最近幾天。
+///
+/// 七天是刻意的：固定含一個週末，平日與週末的比例每天都一樣，數字不會因為
+/// 今天是星期幾而跳。窗口再短，一個週末就能主導預測；再長（例如十四天）
+/// 一個計費期只剩兩個窗口，反應不出行為變化。
+const RECENT_WINDOW_DAYS: i64 = 7;
 
 #[tauri::command]
 pub fn get_snapshot(state: State<'_, Arc<AppState>>, update: State<'_, UpdateState>) -> PanelData {
@@ -359,6 +366,31 @@ fn used_today(
     Some(at_midnight.saturating_sub(snapshot.remaining_minutes))
 }
 
+/// 最近 `RECENT_WINDOW_DAYS` 天實際玩掉多少，給預測當遊玩率的分子。
+///
+/// 窗口起點要 clamp 到本期起點。`fetch_session_history` 把場次濾成
+/// `started_at >= span_start`，分子拿不到本期之前的場次，分母卻會照算七天，
+/// 不 clamp 的話期初前六天的遊玩率會被低估。clamp 之後期初算出來剛好等於
+/// 整期平均，也就是本來的行為。
+///
+/// 這次沒抓到逐場紀錄就回 `None`，`pace::compute` 會退回整期平均。
+/// 不像 `used_today` 那樣從快照歷史回推：那份歷史只有程式開著的那些時段，
+/// 拿它補窗口會漏掉關機那幾晚，低估的幅度比整期平均更難預料。
+fn recent_play(
+    state: &AppState,
+    snapshot: &QuotaSnapshot,
+    now: DateTime<Utc>,
+) -> Option<pace::RecentPlay> {
+    let span_start = snapshot.span_start?;
+    let since = (now - Duration::days(RECENT_WINDOW_DAYS)).max(span_start);
+    let sessions = state.sessions.lock().unwrap();
+    let sessions = sessions.as_ref()?;
+    Some(pace::RecentPlay {
+        since,
+        minutes: crate::api::playtime::minutes_between(sessions, since, now) as f64,
+    })
+}
+
 pub fn recompute_pace(state: &AppState, now: DateTime<Utc>) {
     // 壞掉的設定檔要講出來，不能靜默沿用上一份：使用者手改壞了卻看到
     // 一切正常，只會以為預測本來就長這樣。訊息存在自己的格子裡，
@@ -378,10 +410,13 @@ pub fn recompute_pace(state: &AppState, now: DateTime<Utc>) {
     let used_today = snapshot
         .as_ref()
         .and_then(|snapshot| used_today(state, snapshot, now, tz));
+    let recent = snapshot
+        .as_ref()
+        .and_then(|snapshot| recent_play(state, snapshot, now));
 
     let report = snapshot
         .as_ref()
-        .and_then(|snapshot| pace::compute(snapshot, &schedule, now, tz, used_today));
+        .and_then(|snapshot| pace::compute(snapshot, &schedule, now, tz, used_today, recent));
     *state.pace.lock().unwrap() = report;
 }
 
@@ -1041,6 +1076,48 @@ mod tests {
         );
 
         assert_eq!(used, Some(145));
+    }
+
+    /// 窗口起點不能早於本期起點。逐場紀錄被濾成 `started_at >= span_start`，
+    /// 分子拿不到本期之前的場次，分母卻會照算七天，不 clamp 的話期初前六天的
+    /// 遊玩率會被低估。clamp 之後期初算出來等於整期平均，也就是本來的行為。
+    #[tokio::test]
+    async fn the_window_never_starts_before_the_span_start() {
+        let h = harness(true).await;
+        let snapshot = QuotaSnapshot::from_subscription(
+            &serde_json::from_str(FIXTURE).unwrap(),
+            at("2026-09-17T00:00:00Z"),
+        );
+        let span_start = snapshot.span_start.unwrap();
+        *h.state.sessions.lock().unwrap() = Some(vec![play_session(
+            "2026-09-16T04:00:00Z",
+            "2026-09-16T05:00:00Z",
+            60.0,
+        )]);
+
+        // 本期第二天：now − 7 天落在本期之前，起點被拉回本期起點。
+        let early = recent_play(&h.state, &snapshot, at("2026-09-17T00:00:00Z")).unwrap();
+        assert_eq!(early.since, span_start);
+        assert_eq!(early.minutes, 60.0);
+
+        // 本期第 15 天：七天完整落在期內，起點就是 now − 7 天，
+        // 09-16 那場已經滑出窗口。
+        let later = recent_play(&h.state, &snapshot, at("2026-09-30T00:00:00Z")).unwrap();
+        assert_eq!(later.since, at("2026-09-23T00:00:00Z"));
+        assert_eq!(later.minutes, 0.0);
+    }
+
+    /// 這次沒抓到逐場紀錄就不給窗口，讓 `pace::compute` 退回整期平均。
+    /// 不從快照歷史補：那份只有程式開著的時段，補出來的窗口是破的。
+    #[tokio::test]
+    async fn no_play_history_means_no_window() {
+        let h = harness(true).await;
+        let snapshot = QuotaSnapshot::from_subscription(
+            &serde_json::from_str(FIXTURE).unwrap(),
+            at("2026-09-21T08:00:00Z"),
+        );
+
+        assert!(recent_play(&h.state, &snapshot, at("2026-09-21T08:00:00Z")).is_none());
     }
 
     /// 昨晚 23:00 玩到今天 01:00，只有後一小時算今天的。

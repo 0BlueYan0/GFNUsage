@@ -35,6 +35,17 @@ pub enum PaceNote {
     Collecting,
 }
 
+/// 最近一段區間實際玩掉的分鐘數，由呼叫端從逐場紀錄算出來。
+///
+/// 收這個而不是直接收 `&[PlaySession]`，是為了不讓 `pace` 依賴 `api`。
+/// `since` 必須已經 clamp 過本期起點：逐場紀錄拿不到本期之前的場次，
+/// 分子少了那一段、分母卻照算七天，算出來的遊玩率會偏低。
+#[derive(Debug, Clone, Copy)]
+pub struct RecentPlay {
+    pub since: DateTime<Utc>,
+    pub minutes: f64,
+}
+
 /// 配速與預測。所有時間單位為分鐘，比例運算用 `f64`
 /// —— `T − projected_used` 在超支時是負數。
 #[derive(Debug, Clone, Serialize)]
@@ -48,7 +59,9 @@ pub struct PaceReport {
     pub expected_used_minutes: Option<f64>,
     /// `U − expected_used`。大於 0 代表超前消耗，UI 轉紅。
     pub over_pace_minutes: Option<f64>,
-    /// `r = U / A_past`：空閒時間裡拿去遊玩的比例。
+    /// 預測實際採用的遊玩率：`recent` 那段區間裡玩掉的分鐘數除以同一段的
+    /// 可遊玩分鐘數。`recent` 是 `None`，或那段區間整個落在封鎖時段裡，
+    /// 就退回整期的 `U / A_past`。只有算得出預測時才有值。
     pub burn_rate: Option<f64>,
     /// 以目前速度推估的期末總用量：`U + r × A_left`。
     pub projected_used_minutes: Option<f64>,
@@ -76,7 +89,8 @@ fn end_of_local_day(now: DateTime<Utc>, tz: Tz) -> DateTime<Utc> {
 /// 由快照與設定算出配速與預測（spec §6）。
 ///
 /// `now` 與 `tz` 都是參數：這個模組不碰系統時鐘，測試才能固定時點。
-/// `used_today`（今天已經用掉的分鐘數）同理 —— 讀歷史檔是呼叫端的事。
+/// `used_today`（今天已經用掉的分鐘數）與 `recent`（最近一段區間玩掉多少）
+/// 同理 —— 讀歷史檔與逐場紀錄是呼叫端的事。
 /// 免費方案（沒有本期）或本期已結束時回傳 `None` —— 沒有配速可言。
 pub fn compute(
     snapshot: &QuotaSnapshot,
@@ -84,6 +98,7 @@ pub fn compute(
     now: DateTime<Utc>,
     tz: Tz,
     used_today: Option<u32>,
+    recent: Option<RecentPlay>,
 ) -> Option<PaceReport> {
     if !snapshot.time_capped {
         return None;
@@ -120,7 +135,6 @@ pub fn compute(
         let expected = total * past as f64 / total_avail as f64;
         report.expected_used_minutes = Some(expected);
         report.over_pace_minutes = Some(used - expected);
-        report.burn_rate = Some(used / past as f64);
     }
 
     if left == 0 {
@@ -165,7 +179,24 @@ pub fn compute(
         return Some(report);
     }
 
-    let rate = used / past as f64;
+    // 預測採用最近一段區間的實際遊玩率，不是整期平均。整期的場次加總等於 U
+    // （spike §3a 實測），所以拿整期的逐場紀錄來算，結果就是下面那條退路，
+    // 一點差別都沒有。要反映「最近開始每天都玩」只能靠窗口。
+    //
+    // 分母站不住（那段區間整個落在封鎖時段裡）或這次沒抓到逐場紀錄，就退回
+    // 整期平均。期初窗口起點被 clamp 到本期起點時兩者相等，所以期初不必另
+    // 設門檻，`Collecting` 那條已經在管樣本太少。
+    let windowed = recent.and_then(|recent| {
+        let window = avail(recent.since, now, schedule, tz);
+        if window > 0 {
+            Some(recent.minutes / window as f64)
+        } else {
+            None
+        }
+    });
+    let rate = windowed.unwrap_or(used / past as f64);
+    report.burn_rate = Some(rate);
+
     let projected = used + rate * left as f64;
     report.projected_used_minutes = Some(projected);
     report.overshoot_minutes = Some(projected - total);
@@ -233,8 +264,30 @@ mod tests {
             now(),
             UTC,
             None,
+            None,
         )
         .expect("時數方案且本期未結束，應該算得出配速")
+    }
+
+    fn report_with(total: u32, remaining: u32, recent: RecentPlay) -> PaceReport {
+        compute(
+            &snapshot(total, remaining),
+            &Schedule::default(),
+            now(),
+            UTC,
+            None,
+            Some(recent),
+        )
+        .expect("時數方案且本期未結束，應該算得出配速")
+    }
+
+    /// 最近七天的窗口。now 是 09-11 00:00Z，所以起點是 09-04 00:00Z，
+    /// 空排程下分母剛好 10080 分鐘。
+    fn last_week(minutes: f64) -> RecentPlay {
+        RecentPlay {
+            since: at("2026-09-04T00:00:00Z"),
+            minutes,
+        }
     }
 
     fn close(actual: Option<f64>, expected: f64) {
@@ -292,6 +345,82 @@ mod tests {
         );
     }
 
+    /// 窗口起點被 clamp 到本期起點時（期初前六天），窗口的分子分母就是整期的
+    /// 分子分母，所以預測必須與整期平均一字不差。期初不另設門檻靠的是這一點。
+    #[test]
+    fn a_window_clamped_to_the_span_start_matches_the_whole_period() {
+        let clamped = RecentPlay {
+            since: at("2026-09-01T00:00:00Z"),
+            minutes: 1500.0,
+        };
+        let r = report_with(6000, 4500, clamped);
+        close(r.burn_rate, 1500.0 / 14400.0);
+        close(r.projected_used_minutes, 4500.0);
+        assert_eq!(r.runs_out_at, None);
+    }
+
+    /// 同一份快照，1500 分鐘全集中在最近七天：r 從 1500/14400 變成 1500/10080，
+    /// 預測跟著從 4500 變成 1500 + 0.14881 × 28800。
+    #[test]
+    fn a_recent_burst_raises_the_projection() {
+        let r = report_with(6000, 4500, last_week(1500.0));
+        close(r.burn_rate, 1500.0 / 10080.0);
+        close(r.projected_used_minutes, 5785.7);
+    }
+
+    /// 3000 分鐘全在最近七天，用完的日子從整期平均的 09-21 提早到 09-18：
+    /// r = 3000/10080，R/r = 10080 分鐘，空排程下就是七天。
+    #[test]
+    fn a_recent_burst_brings_the_run_out_date_forward() {
+        assert_eq!(
+            report_with(6000, 3000, last_week(3000.0)).runs_out_at,
+            Some(at("2026-09-18T00:00:00Z"))
+        );
+    }
+
+    /// 最近七天完全沒玩，預測就停在現在的用量。整期平均會說 4500，
+    /// 而它答的是 1500 —— 這就是換成窗口的用意。
+    #[test]
+    fn a_quiet_week_projects_no_further_use() {
+        let r = report_with(6000, 4500, last_week(0.0));
+        close(r.burn_rate, 0.0);
+        close(r.projected_used_minutes, 1500.0);
+        assert_eq!(r.runs_out_at, None);
+        // 期末會剩 4500，只帶得走 900。
+        close(r.wasted_minutes, 3600.0);
+    }
+
+    /// 窗口整段落在封鎖時段裡（分母為 0）就退回整期平均，不是回答零。
+    #[test]
+    fn a_fully_blocked_window_falls_back_to_the_whole_period() {
+        let blocked = Schedule {
+            weekly: Vec::new(),
+            exceptions: vec![crate::pace::schedule::Exception {
+                start_date: "2026-09-04".parse().unwrap(),
+                end_date: "2026-09-10".parse().unwrap(),
+                kind: crate::pace::schedule::ExceptionKind::Blocked,
+                note: String::new(),
+            }],
+        };
+        let snap = snapshot(6000, 4500);
+        let with_window = compute(&snap, &blocked, now(), UTC, None, Some(last_week(0.0))).unwrap();
+        let without = compute(&snap, &blocked, now(), UTC, None, None).unwrap();
+        assert_eq!(with_window.avail_past_minutes, 4320);
+        assert_eq!(
+            with_window.projected_used_minutes,
+            without.projected_used_minutes
+        );
+    }
+
+    /// 配速那一列是均勻門檻，不是速度估計，所以不受窗口影響。
+    #[test]
+    fn the_pace_threshold_ignores_the_window() {
+        let windowed = report_with(6000, 4500, last_week(1500.0));
+        let whole = report(6000, 4500);
+        assert_eq!(windowed.expected_used_minutes, whole.expected_used_minutes);
+        assert_eq!(windowed.over_pace_minutes, whole.over_pace_minutes);
+    }
+
     /// spec §6.5：r = 0 時「以目前速度不會用完」。
     #[test]
     fn a_zero_burn_rate_never_runs_out() {
@@ -320,7 +449,7 @@ mod tests {
     fn projections_wait_until_twelve_hours_of_playable_time_have_passed() {
         let snap = snapshot(6000, 5900);
         let early = at("2026-09-01T06:00:00Z");
-        let r = compute(&snap, &Schedule::default(), early, UTC, None).unwrap();
+        let r = compute(&snap, &Schedule::default(), early, UTC, None, None).unwrap();
         assert_eq!(r.note, Some(PaceNote::Collecting));
         assert_eq!(r.projected_used_minutes, None);
         assert_eq!(r.wasted_minutes, None);
@@ -342,6 +471,7 @@ mod tests {
             at("2026-09-01T00:00:00Z"),
             UTC,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(r.note, Some(PaceNote::Insufficient));
@@ -361,7 +491,7 @@ mod tests {
                 note: String::new(),
             }],
         };
-        let r = compute(&snapshot(6000, 4500), &blocked, now(), UTC, None).unwrap();
+        let r = compute(&snapshot(6000, 4500), &blocked, now(), UTC, None, None).unwrap();
         assert_eq!(r.avail_left_minutes, 0);
         assert_eq!(r.note, Some(PaceNote::NoTimeLeft));
         assert_eq!(r.today_budget_minutes, None);
@@ -374,7 +504,7 @@ mod tests {
         let mut sub: Subscription = serde_json::from_str(FIXTURE).unwrap();
         sub.sub_type = "FREE".into();
         let snap = QuotaSnapshot::from_subscription(&sub, now());
-        assert!(compute(&snap, &Schedule::default(), now(), UTC, None).is_none());
+        assert!(compute(&snap, &Schedule::default(), now(), UTC, None, None).is_none());
     }
 
     /// spec §6.5：本期已經結束的資料不做任何推算，等下一次抓取。
@@ -386,6 +516,7 @@ mod tests {
             &Schedule::default(),
             at("2026-10-02T00:00:00Z"),
             UTC,
+            None,
             None
         )
         .is_none());
@@ -411,6 +542,7 @@ mod tests {
             at(at_time),
             UTC,
             used_today,
+            None,
         )
         .unwrap()
         .today_budget_minutes
@@ -473,7 +605,7 @@ mod tests {
             }],
             exceptions: Vec::new(),
         };
-        let with_sleep = compute(&snapshot(6000, 4500), &sleep, now(), UTC, None).unwrap();
+        let with_sleep = compute(&snapshot(6000, 4500), &sleep, now(), UTC, None, None).unwrap();
         let without = report(6000, 4500);
         assert!(with_sleep.avail_past_minutes < without.avail_past_minutes);
         assert!(with_sleep.avail_left_minutes < without.avail_left_minutes);
@@ -493,7 +625,7 @@ mod tests {
         sub.current_span_start_date_time = Some(at("2026-09-01T00:00:00Z"));
         sub.current_span_end_date_time = Some(at("2026-10-01T00:00:00Z"));
         let snap = QuotaSnapshot::from_subscription(&sub, now());
-        let r = compute(&snap, &Schedule::default(), now(), UTC, None).unwrap();
+        let r = compute(&snap, &Schedule::default(), now(), UTC, None, None).unwrap();
         assert_eq!(display_state(&snap, Some(&r)), DisplayState::Low);
     }
 
