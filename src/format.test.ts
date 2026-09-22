@@ -3,6 +3,7 @@ import {
   daysUntil,
   formatCountdown,
   formatDuration,
+  formatForecast,
   formatHeroUnit,
   formatOverPace,
   formatLocalDateTime,
@@ -10,6 +11,7 @@ import {
   percentOf,
   splitDuration,
 } from "./format";
+import type { PaceReport } from "./types";
 
 describe("splitDuration", () => {
   it("拆成小時與分鐘", () => {
@@ -171,5 +173,58 @@ describe("modifier", () => {
   it("其餘狀態把基底與修飾詞一起給", () => {
     expect(modifier("trend", "overPace")).toBe("trend trend--overPace");
     expect(modifier("meter__fill", "low")).toBe("meter__fill meter__fill--low");
+  });
+});
+
+describe("formatForecast", () => {
+  const report = (overrides: Partial<PaceReport> = {}): PaceReport => ({
+    availPastMinutes: 14400,
+    availLeftMinutes: 28800,
+    expectedUsedMinutes: 2000,
+    overPaceMinutes: -500,
+    burnRate: 0.104,
+    projectedUsedMinutes: 4500,
+    overshootMinutes: -1500,
+    runsOutAt: null,
+    wastedMinutes: 600,
+    todayBudgetMinutes: 225,
+    note: null,
+    ...overrides,
+  });
+
+  it("預估會剩下時報告結轉浪費", () => {
+    const lines = formatForecast(report(), 6000)!.split("\n");
+    expect(lines[0]).toBe("月底約用 75 小時，會剩 25 小時");
+    expect(lines[1]).toBe("10 小時 會浪費掉");
+  });
+
+  it("預估超支時報告超支多少與哪天用完", () => {
+    const lines = formatForecast(
+      report({
+        projectedUsedMinutes: 9000,
+        overshootMinutes: 3000,
+        wastedMinutes: 0,
+        runsOutAt: "2026-09-21T00:00:00Z",
+      }),
+      6000,
+    )!.split("\n");
+    expect(lines[0]).toBe("月底約用 150 小時，超支 50 小時");
+    expect(lines[1]).toMatch(/用完$/);
+  });
+
+  /// 「會剩 25 小時」已經回答了會不會用完，不再補一句。
+  it("不會用完時不再補一句", () => {
+    const text = formatForecast(report({ wastedMinutes: 0 }), 6000);
+    expect(text).toBe("月底約用 75 小時，會剩 25 小時");
+  });
+
+  /// 樣本還不夠時圖上沒有虛線，tooltip 也就沒有東西可講。
+  it("沒有預測時回 null", () => {
+    expect(
+      formatForecast(
+        report({ projectedUsedMinutes: null, overshootMinutes: null }),
+        6000,
+      ),
+    ).toBeNull();
   });
 });

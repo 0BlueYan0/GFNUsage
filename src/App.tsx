@@ -8,6 +8,7 @@ import {
   formatCountdown,
   formatDuration,
   formatHeroUnit,
+  formatForecast,
   formatLocalDateTime,
   modifier,
   percentOf,
@@ -115,13 +116,7 @@ function Quota({
         )}
       </dl>
 
-      {pace && (
-        <Pace
-          pace={pace}
-          usedMinutes={snapshot.usedMinutes}
-          totalMinutes={snapshot.totalMinutes}
-        />
-      )}
+      {pace && <Pace pace={pace} usedMinutes={snapshot.usedMinutes} />}
     </>
   );
 }
@@ -459,6 +454,9 @@ export default function App() {
             metric={data.metric}
             totalMinutes={snapshot.totalMinutes}
             state={data.state}
+            forecast={
+              data.pace && formatForecast(data.pace, snapshot.totalMinutes)
+            }
           />
         )}
 

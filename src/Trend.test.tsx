@@ -25,6 +25,7 @@ function draw(points: DailyPoint[], metric: "remaining" | "used" = "remaining") 
       metric={metric}
       totalMinutes={TOTAL}
       state="normal"
+      forecast={null}
     />,
   ).container;
 }
@@ -126,6 +127,43 @@ describe("Trend", () => {
     expect(container.querySelector(".trend__projected")).toBeNull();
   });
 
+  /// 預測那幾句搬進 tooltip 了。SVG 的 tooltip 來自子元素 `<title>`，
+  /// `title` 屬性在 SVG 上不生效。
+  it("預測那幾句進 title", () => {
+    const container = render(
+      <Trend
+        daily={daily()}
+        metric="remaining"
+        totalMinutes={TOTAL}
+        state="normal"
+        forecast={"月底約用 75 小時，會剩 25 小時\n10 小時 會浪費掉"}
+      />,
+    ).container;
+    expect(container.querySelector("title")?.textContent).toBe(
+      "月底約用 75 小時，會剩 25 小時\n10 小時 會浪費掉",
+    );
+  });
+
+  /// 讀螢幕的人不會滑過來，而那幾句已經不在面板上了，所以名稱要帶著它。
+  it("名稱也帶著預測那幾句", () => {
+    const container = render(
+      <Trend
+        daily={daily()}
+        metric="remaining"
+        totalMinutes={TOTAL}
+        state="normal"
+        forecast={"月底約用 75 小時，會剩 25 小時\n10 小時 會浪費掉"}
+      />,
+    ).container;
+    expect(container.querySelector("svg")?.getAttribute("aria-label")).toBe(
+      "本期用量走勢。月底約用 75 小時，會剩 25 小時，10 小時 會浪費掉",
+    );
+  });
+
+  it("沒有預測時不給 title", () => {
+    expect(draw(daily()).querySelector("title")).toBeNull();
+  });
+
   /// 顏色掛在 svg 上，兩個標記都吃 `currentColor`，所以狀態修飾詞只有一組。
   it("超前消耗時整張圖換色", () => {
     const container = render(
@@ -134,6 +172,7 @@ describe("Trend", () => {
         metric="remaining"
         totalMinutes={TOTAL}
         state="overPace"
+        forecast={null}
       />,
     ).container;
     expect(container.querySelector(".trend--overPace")).toBeTruthy();

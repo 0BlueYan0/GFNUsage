@@ -7,7 +7,7 @@
 ### Added
 
 - The main panel charts the period below the pace numbers: how the quota has
-  run down, and where it is heading.
+  run down, and where it is heading. Hover the chart for the month-end figures.
 
 ### Changed
 

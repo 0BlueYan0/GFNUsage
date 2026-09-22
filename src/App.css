@@ -362,11 +362,6 @@ textarea {
   font-weight: 600;
 }
 
-.pace__runs-out,
-.pace__waste {
-  color: var(--fg-muted);
-}
-
 /* 捲的是面板自己，不是文件。
    `height: auto` 加 `overflow-y: auto` 的組合會讓它變成 sticky 的容器區塊
    卻又不產生捲動，裡面貼上去的標題因此跟著文件一起捲走。 */
@@ -591,4 +586,9 @@ textarea {
   fill: var(--fg-muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+/* 滑鼠目標。`fill: none` 不接指標事件，`transparent` 才接。 */
+.trend__hit {
+  fill: transparent;
 }

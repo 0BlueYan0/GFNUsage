@@ -1,4 +1,4 @@
-import type { DisplayState } from "./types";
+import type { DisplayState, PaceReport } from "./types";
 
 /**
  * 拆成小時與分鐘，給要分別排版的地方（面板的主要數字）。
@@ -116,4 +116,33 @@ export function modifier(base: string, state: DisplayState): string {
   return state === "normal" || state === "freeTier"
     ? base
     : `${base} ${base}--${state}`;
+}
+
+/**
+ * 走勢圖 tooltip 的內容，也就是原本面板上「預測」那一列的那幾句。
+ *
+ * 一行一句。沒有預測時回 `null`，那時圖上也沒有虛線可以說明。
+ */
+export function formatForecast(
+  pace: PaceReport,
+  totalMinutes: number,
+): string | null {
+  const projected = pace.projectedUsedMinutes;
+  const overshoot = pace.overshootMinutes;
+  if (projected === null || overshoot === null) return null;
+
+  const lines = [
+    `月底約用 ${formatDuration(projected)}，` +
+      (overshoot > 0
+        ? `超支 ${formatDuration(overshoot)}`
+        : `會剩 ${formatDuration(totalMinutes - projected)}`),
+  ];
+  // 不補「不會用完」那一句。上一行的「會剩 X」已經回答了。
+  if (pace.runsOutAt) {
+    lines.push(`${formatLocalDateTime(pace.runsOutAt)} 用完`);
+  }
+  if (pace.wastedMinutes !== null && pace.wastedMinutes > 0) {
+    lines.push(`${formatDuration(pace.wastedMinutes)} 會浪費掉`);
+  }
+  return lines.join("\n");
 }

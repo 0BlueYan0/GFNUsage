@@ -39,11 +39,14 @@ export default function Trend({
   metric,
   totalMinutes,
   state,
+  forecast,
 }: {
   daily: DailyPoint[];
   metric: Metric;
   totalMinutes: number;
   state: DisplayState;
+  /** 虛線走到哪的那幾句，滑過去才出現。原本是面板上「預測」那一列。 */
+  forecast: string | null;
 }) {
   // 沒有資料就什麼都不畫，不畫空框。後端已經決定哪些情況吐空陣列
   // （免費方案、本期已結束、還沒抓到逐場紀錄），這裡不再判一次。
@@ -113,8 +116,18 @@ export default function Trend({
       className={modifier("trend", state)}
       viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
       role="img"
-      aria-label="本期用量走勢"
+      // 讀螢幕的人不會滑過來，所以那幾句要進得了名稱。`aria-label` 在
+      // 無障礙樹裡蓋過 `<title>`，只留 `<title>` 的話他們就只聽得到圖名。
+      aria-label={
+        forecast ? `本期用量走勢。${forecast.replace(/\n/g, "，")}` : "本期用量走勢"
+      }
     >
+      {/* SVG 的 tooltip 來自子元素 `<title>`，不是 `title` 屬性。 */}
+      {forecast && <title>{forecast}</title>}
+      {/* 透明的整塊當滑鼠目標。SVG 的空白處沒有圖形元素接得到指標事件，
+          少了它就得剛好滑到那條 2px 的線上才叫得出 tooltip。
+          `fill: none` 收不到事件，要 `transparent`。 */}
+      <rect className="trend__hit" x={0} y={0} width={WIDTH} height={HEIGHT} />
       {/* 「用完」那條高度。看剩餘時它在底部，看已使用時在頂部，同一條
           運算式兩邊都對。兩個百分比講的是線走到哪，這條講的是走到哪裡
           就沒得玩了。 */}
