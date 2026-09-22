@@ -98,10 +98,13 @@ function Quota({
         }
         title={paceText ?? undefined}
       >
-        <div
-          className={modifier("meter__fill", state)}
-          style={{ width: `${percent}%` }}
-        />
+        {/* 圓角與裁切在這一層。那條線要凸出去，不能被它裁掉。 */}
+        <div className="meter__track">
+          <div
+            className={modifier("meter__fill", state)}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
         {/* 配速門檻。長條走過它就是超前，這件事本來寫成一列字。
             減 1px 是把 2px 寬的線壓在那個位置上，不是從那裡往右長。 */}
         {pacePercent !== null && (
