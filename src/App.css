@@ -139,7 +139,12 @@ body {
   font-size: 13px;
 }
 
+/* `flex: 0 0 auto` 不能省。`.panel__body` 是 flex column，內容超出可視高度
+   時預設的 `flex-shrink: 1` 會壓縮每一個子元素，而這一條裡面沒有文字，
+   最小高度是 0，於是它被壓到 0 就整條不見了。其他幾區有字撐著才沒事。
+   加了走勢圖之後內容才開始超出，所以這條在那之前一直看不出問題。 */
 .meter {
+  flex: 0 0 auto;
   height: 6px;
   border-radius: 3px;
   background: var(--bg-sunken);
