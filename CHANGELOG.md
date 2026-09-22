@@ -2,6 +2,18 @@
 
 [繁體中文](CHANGELOG.zh-TW.md)
 
+## [0.2.0] - 2026-09-22
+
+### Added
+
+- The main panel charts the period below the pace numbers: how the quota has
+  run down, and where it is heading.
+
+### Changed
+
+- The forecast follows the last seven days of play instead of averaging the
+  whole period.
+
 ## [0.1.3] - 2026-09-22
 
 ### Fixed
