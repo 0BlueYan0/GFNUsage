@@ -78,10 +78,27 @@ export interface PlaySession {
   minutes: number;
 }
 
+/** 本期某一個當地日期的累計已使用量。日期是 YYYY-MM-DD。 */
+export interface DailyPoint {
+  date: string;
+  /**
+   * 已經過完的那些天是那一天結束時的累計。今天的值是「現在」的累計，
+   * 未來的日子是 null。
+   */
+  usedMinutes: number | null;
+  /**
+   * 用真實燃燒率往後推的累計。今天與未來才有值，今天的值與 `usedMinutes`
+   * 相同，實線與虛線因此在今天接得起來。
+   */
+  projectedUsedMinutes: number | null;
+}
+
 export interface PanelData {
   snapshot: QuotaSnapshot | null;
   /** 最近幾場，新的在前。抓不到逐場紀錄時是空的。 */
   recentSessions: PlaySession[];
+  /** 本期的逐日累計用量。免費方案、本期已結束、還沒抓到紀錄時是空的。 */
+  daily: DailyPoint[];
   pace: PaceReport | null;
   /** 併入配速後的狀態。畫面一律用這個。 */
   state: DisplayState;

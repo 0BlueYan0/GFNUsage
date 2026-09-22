@@ -35,6 +35,7 @@ function panelData(remaining: number) {
     loginPending: false,
     metric: "remaining",
     recentSessions: [],
+    daily: [],
     updateVersion: null,
   };
 }

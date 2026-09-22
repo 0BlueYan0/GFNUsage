@@ -15,6 +15,22 @@ function session(startedAt: string, gameTitle: string, minutes: number) {
   return { gameTitle, startedAt, endedAt: null, minutes };
 }
 
+/// 本期 09-15 到 10-15，今天是 09-21。前七天是實線，其餘是虛線，
+/// 兩端的數字與下面那份 `pace` 對得上（現在 991，期末預估 4951）。
+const TODAY_INDEX = 6;
+const DAILY = Array.from({ length: 31 }, (_, i) => {
+  const date = new Date(Date.UTC(2026, 8, 15 + i)).toISOString().slice(0, 10);
+  const past = i <= TODAY_INDEX;
+  return {
+    date,
+    usedMinutes: past ? Math.round((991 * i) / TODAY_INDEX) : null,
+    projectedUsedMinutes:
+      i < TODAY_INDEX
+        ? null
+        : Math.round(991 + ((4951 - 991) * (i - TODAY_INDEX)) / (30 - TODAY_INDEX)),
+  };
+});
+
 /// 最擠的情況：40 場紀錄、配速三列都在、加購與上期未用完都有值，
 /// 再加上一條「有新版本」的橫幅。
 const DATA: PanelData = {
@@ -69,6 +85,7 @@ const DATA: PanelData = {
       16 + i * 7,
     ),
   ),
+  daily: DAILY,
   updateVersion: "0.1.1",
 };
 
@@ -91,14 +108,18 @@ const SCHEDULE: Schedule = {
 /// `?screen=` 不帶參數看主面板，`signin` 登入畫面，`about` 關於頁，
 /// `settings` 設定頁，`sessions` 最近。容器不一樣（`.panel--scroll` 對
 /// `.panel`），改版面每一個都要看。
-const SCREEN = new URLSearchParams(location.search).get("screen") ?? "";
+const QUERY = new URLSearchParams(location.search);
+const SCREEN = QUERY.get("screen") ?? "";
+/// `?metric=used` 把主要數字與走勢圖換到已使用那一邊。走勢圖的 Y 軸跟著它
+/// 翻，兩種都要看 —— 翻錯的話線會變形而不是上下顛倒。
+const METRIC = QUERY.get("metric") === "used" ? "used" : "remaining";
 
 (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
   invoke: async (command: string) => {
     if (command === "get_snapshot") {
       return SCREEN === "signin"
         ? { ...DATA, snapshot: null, pace: null, hasCredentials: false, recentSessions: [] }
-        : DATA;
+        : { ...DATA, metric: METRIC };
     }
     // 關於頁要的三樣。給有值的版本，不然那一頁空著就看不出版面。
     if (command === "app_version") return "0.1.0";

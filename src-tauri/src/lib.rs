@@ -8,6 +8,7 @@ pub mod panel;
 pub mod quota;
 pub mod store;
 pub mod tray;
+pub mod trend;
 pub mod update;
 
 use std::path::PathBuf;
@@ -69,6 +70,13 @@ pub struct AppState {
 
     /// 最近一次算出的配速。跟著快照一起被系統匣與面板讀取。
     pub pace: Mutex<Option<PaceReport>>,
+
+    /// 最近一次算出的逐日累計，給面板那張折線圖。
+    ///
+    /// 存下來是因為 `sessions` 抓不到時是 `None`，而那是 `used_today` 要的
+    /// 語意（見上面 `sessions` 的註解），不能為了圖去改它。圖只要上次那份
+    /// 還在就照畫，免得一次抓失敗就讓整張圖消失五分鐘。
+    pub trend: Mutex<Vec<crate::trend::DailyPoint>>,
 
     /// 設定的記憶體快取。每個輪詢週期會從檔案重讀，手動改檔案不必重開程式。
     pub schedule: Mutex<Schedule>,
@@ -149,6 +157,7 @@ impl AppState {
             snapshot: Mutex::new(None),
             sessions: Mutex::new(None),
             pace: Mutex::new(None),
+            trend: Mutex::new(Vec::new()),
             schedule: Mutex::new(schedule),
             last_error: Mutex::new(None),
             settings_error: Mutex::new(None),

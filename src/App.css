@@ -523,3 +523,59 @@ textarea {
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
 }
+
+/* 本期用量走勢。
+   高度寫死 64px。`.panel__body` 是唯一會捲的那一層，圖再高就把配速那幾列
+   推到捲軸下面。顏色掛在 svg 上讓兩個標記都吃 `currentColor`，這樣狀態
+   修飾詞只要一組。 */
+.trend {
+  display: block;
+  flex: 0 0 auto;
+  width: 100%;
+  height: 64px;
+  color: var(--accent);
+}
+
+.trend--low {
+  color: var(--state-low);
+}
+
+.trend--overPace {
+  color: var(--state-over-pace);
+}
+
+.trend--exhausted {
+  color: var(--state-exhausted);
+}
+
+.trend__actual,
+.trend__projected {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trend__actual {
+  stroke: currentColor;
+}
+
+/* 預測比實線輕。虛線本身是分辨兩條線的主要依據，不是裝飾：深色模式下
+   這個綠與 `--fg-muted` 的明度幾乎一樣，靠顏色分不出哪條是哪條。 */
+.trend__projected {
+  stroke: var(--fg-muted);
+  stroke-dasharray: 3 3;
+  opacity: 0.75;
+}
+
+.trend__today {
+  fill: currentColor;
+}
+
+/* 「用完」那條高度。看剩餘時在底部，看已使用時在頂部。 */
+.trend__limit {
+  stroke: var(--line);
+  stroke-width: 1;
+  /* 畫布寬度會被縮放，1px 的線落在半個像素上就被抹成幾乎看不見。 */
+  shape-rendering: crispEdges;
+}

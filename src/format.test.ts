@@ -6,6 +6,7 @@ import {
   formatHeroUnit,
   formatOverPace,
   formatLocalDateTime,
+  modifier,
   percentOf,
   splitDuration,
 } from "./format";
@@ -157,5 +158,18 @@ describe("formatHeroUnit", () => {
     const minutes = 6185;
     const { hours } = splitDuration(minutes);
     expect(`${hours} ${formatHeroUnit(minutes)}`).toBe(formatDuration(minutes));
+  });
+});
+
+describe("modifier", () => {
+  it("normal 與 freeTier 不加修飾詞", () => {
+    expect(modifier("trend", "normal")).toBe("trend");
+    expect(modifier("trend", "freeTier")).toBe("trend");
+  });
+
+  /// 進度條與走勢圖吃同一組，所以類別名要跟 CSS 裡那幾條對得上。
+  it("其餘狀態把基底與修飾詞一起給", () => {
+    expect(modifier("trend", "overPace")).toBe("trend trend--overPace");
+    expect(modifier("meter__fill", "low")).toBe("meter__fill meter__fill--low");
   });
 });

@@ -1,3 +1,5 @@
+import type { DisplayState } from "./types";
+
 /**
  * 拆成小時與分鐘，給要分別排版的地方（面板的主要數字）。
  *
@@ -102,4 +104,16 @@ export function formatHeroUnit(minutes: number): string {
 export function formatOverPace(overPaceMinutes: number): string {
   const gap = formatDuration(Math.abs(overPaceMinutes));
   return overPaceMinutes > 0 ? `超前 ${gap}` : `低於門檻 ${gap}`;
+}
+
+/**
+ * 狀態對應的 CSS 修飾詞，normal 與 freeTier 不加。
+ *
+ * 放在這裡是因為進度條與走勢圖都要用同一組。留在 App.tsx 裡的話
+ * Trend.tsx 只能自己再寫一份，兩份遲早會有一份忘了跟著改。
+ */
+export function modifier(base: string, state: DisplayState): string {
+  return state === "normal" || state === "freeTier"
+    ? base
+    : `${base} ${base}--${state}`;
 }

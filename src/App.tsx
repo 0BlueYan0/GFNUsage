@@ -9,10 +9,12 @@ import {
   formatDuration,
   formatHeroUnit,
   formatLocalDateTime,
+  modifier,
   percentOf,
   splitDuration,
 } from "./format";
 import Pace from "./Pace";
+import Trend from "./Trend";
 import Sessions from "./Sessions";
 import About from "./About";
 import ScheduleForm from "./Schedule";
@@ -32,13 +34,6 @@ const STATE_BADGE: Record<DisplayState, string | null> = {
   exhausted: "已用完",
   freeTier: "免費方案",
 };
-
-/** 狀態對應的 CSS 修飾詞，normal 不加。 */
-function modifier(base: string, state: DisplayState): string {
-  return state === "normal" || state === "freeTier"
-    ? base
-    : `${base} ${base}--${state}`;
-}
 
 function Quota({
   snapshot,
@@ -454,6 +449,17 @@ export default function App() {
           />
         ) : (
           <p className="note">沒有資料</p>
+        )}
+
+        {/* 走勢圖排在配速之後。主面板扣掉配額與配速已經沒有餘裕，圖擺在
+            上面會把配速那幾列推到捲軸下面。`daily` 是空的就不畫。 */}
+        {snapshot && (
+          <Trend
+            daily={data.daily}
+            metric={data.metric}
+            totalMinutes={snapshot.totalMinutes}
+            state={data.state}
+          />
         )}
 
         {data.lastError && <p className="alert">{data.lastError}</p>}

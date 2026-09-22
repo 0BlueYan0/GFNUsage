@@ -18,6 +18,7 @@ use crate::panel;
 use crate::quota::{DisplayState, QuotaSnapshot};
 use crate::store::{self, SnapshotRow};
 use crate::tray;
+use crate::trend;
 use crate::update::{CheckResult, UpdateState};
 use crate::AppState;
 use tauri_plugin_autostart::ManagerExt;
@@ -54,6 +55,10 @@ pub struct PanelData {
 
     /// 最近幾場，新的在前。抓不到逐場紀錄時是空的。
     pub recent_sessions: Vec<crate::api::playtime::PlaySession>,
+
+    /// 本期的逐日累計用量，給折線圖。免費方案、本期已結束、或還沒抓到過
+    /// 逐場紀錄時是空的，空的就不畫圖。
+    pub daily: Vec<crate::trend::DailyPoint>,
 }
 
 /// 最多帶幾場給面板。
@@ -192,6 +197,7 @@ pub fn panel_data(state: &AppState) -> PanelData {
             .take(RECENT_SESSIONS)
             .cloned()
             .collect(),
+        daily: state.trend.lock().unwrap().clone(),
     }
 }
 
@@ -417,6 +423,24 @@ pub fn recompute_pace(state: &AppState, now: DateTime<Utc>) {
     let report = snapshot
         .as_ref()
         .and_then(|snapshot| pace::compute(snapshot, &schedule, now, tz, used_today, recent));
+
+    // 折線圖只在抓到逐場紀錄的那些週期重算，抓不到就留著上一份 —— 一次
+    // 失敗不該讓整張圖消失到下一個週期。免費方案與本期結束是例外：那時
+    // `compute` 回 `None`，圖要跟著清掉，否則降成免費之後配額那一區已經
+    // 不見了，圖還留在畫面上。
+    //
+    // 場次先複製出來再鎖 `trend`，兩把鎖不同時持有。
+    let sessions = state.sessions.lock().unwrap().clone();
+    match (snapshot.as_ref(), report.as_ref()) {
+        (Some(snapshot), Some(pace)) => {
+            if let Some(sessions) = sessions.as_deref() {
+                *state.trend.lock().unwrap() =
+                    trend::build(sessions, snapshot, pace.burn_rate, &schedule, now, tz);
+            }
+        }
+        _ => state.trend.lock().unwrap().clear(),
+    }
+
     *state.pace.lock().unwrap() = report;
 }
 
