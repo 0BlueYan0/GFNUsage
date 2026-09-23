@@ -30,6 +30,11 @@ burning through it too fast.
 - ✅ **Pace threshold** — how much *should* you have used by now? Go past it
   and the display turns red
 - ✅ **Overrun prediction** — which day you run out, and by how much
+- ✅ **Period chart** — how the quota has run down so far, and where the last
+  seven days of play take it by month-end
+- ✅ **Refreshes when a session ends** — on Windows, the numbers update a few
+  minutes after you leave a game. Pick how often to refresh otherwise, or turn
+  scheduled refreshes off
 - ✅ **Blackout windows** — mark the hours you cannot play: work, sleep,
   anything. Predictions then divide by *available* time rather than
   wall-clock time. A weekend holds more than twice the free time of a
