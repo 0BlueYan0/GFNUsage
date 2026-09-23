@@ -3,6 +3,10 @@
 
 ### 錯誤修正
 
+* **app:** 資料更新設成關閉時，啟動仍抓一次 ([1ca6066](https://github.com/0BlueYan0/GFNUsage/commit/1ca6066d94c727509bb84560a67d76c0fa0091df))
+* **ui:** 更新間隔那一列改叫「資料更新」，不再跟程式更新同名 ([44c22e0](https://github.com/0BlueYan0/GFNUsage/commit/44c22e0a9d57446a3086f6513d56f41e338d017f))
+* **ui:** 走勢圖改用最後一次抓到的遊玩紀錄重畫，登出時清掉 ([aa8d879](https://github.com/0BlueYan0/GFNUsage/commit/aa8d879291cad2b562f11e41355ef4c2924b3825))
+* **ui:** 主面板不再因為 1px 的溢出冒出捲軸 ([7595dc0](https://github.com/0BlueYan0/GFNUsage/commit/7595dc08c0eb355a5ed71a60eec16b51be178437))
 * **ui:** 進度條不再被壓到看不見 ([b32bff4](https://github.com/0BlueYan0/GFNUsage/commit/b32bff465cdd0a8cc99db1dbe18eeb2fd9d8411b))
 
 
@@ -18,6 +22,7 @@
 * **ui:** 預測那幾句移進走勢圖的 tooltip ([8a1e80b](https://github.com/0BlueYan0/GFNUsage/commit/8a1e80b95269ea0c40d419820232571c75b03fc6))
 * **ui:** 走勢圖加上百分比刻度 ([7f234ce](https://github.com/0BlueYan0/GFNUsage/commit/7f234ceee0259a7e2545314e5f3bcecf733f7ed0))
 * **watcher:** 讀 GeForce NOW 視窗的狀態 ([522c4af](https://github.com/0BlueYan0/GFNUsage/commit/522c4af4af492f2ce060cdb482f7cc749e96f77b))
+* **widget:** 在 Windows 工作列上顯示剩餘或已使用的時數 ([d9857a2](https://github.com/0BlueYan0/GFNUsage/commit/d9857a25f8817e5739439f704423a6d96e5732b7))
 
 ## [0.1.3](https://github.com/0BlueYan0/GFNUsage/compare/v0.1.2...v0.1.3) (2026-09-21)
 

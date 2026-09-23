@@ -3,6 +3,10 @@
 
 ### Bug Fixes
 
+* **app:** fetch once at startup even when the refresh interval is off ([1ca6066](https://github.com/0BlueYan0/GFNUsage/commit/1ca6066d94c727509bb84560a67d76c0fa0091df))
+* **ui:** name the refresh interval setting after the data, not the app ([44c22e0](https://github.com/0BlueYan0/GFNUsage/commit/44c22e0a9d57446a3086f6513d56f41e338d017f))
+* **ui:** redraw the chart from the last good play history, and clear it on logout ([aa8d879](https://github.com/0BlueYan0/GFNUsage/commit/aa8d879291cad2b562f11e41355ef4c2924b3825))
+* **ui:** stop a 1px overflow from putting a scrollbar on the main panel ([7595dc0](https://github.com/0BlueYan0/GFNUsage/commit/7595dc08c0eb355a5ed71a60eec16b51be178437))
 * **ui:** stop the progress bar from being squashed to nothing ([b32bff4](https://github.com/0BlueYan0/GFNUsage/commit/b32bff465cdd0a8cc99db1dbe18eeb2fd9d8411b))
 
 
@@ -18,6 +22,7 @@
 * **ui:** move the forecast into the chart's tooltip ([8a1e80b](https://github.com/0BlueYan0/GFNUsage/commit/8a1e80b95269ea0c40d419820232571c75b03fc6))
 * **ui:** put a percentage scale on the trend chart ([7f234ce](https://github.com/0BlueYan0/GFNUsage/commit/7f234ceee0259a7e2545314e5f3bcecf733f7ed0))
 * **watcher:** read what the GeForce NOW window is doing ([522c4af](https://github.com/0BlueYan0/GFNUsage/commit/522c4af4af492f2ce060cdb482f7cc749e96f77b))
+* **widget:** show the remaining or used time on the Windows taskbar ([d9857a2](https://github.com/0BlueYan0/GFNUsage/commit/d9857a25f8817e5739439f704423a6d96e5732b7))
 
 ## [0.1.3](https://github.com/0BlueYan0/GFNUsage/compare/v0.1.2...v0.1.3) (2026-09-21)
 
