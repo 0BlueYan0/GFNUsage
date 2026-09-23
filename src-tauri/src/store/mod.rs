@@ -196,7 +196,8 @@ pub enum Metric {
 /// 或者視窗偵測失效的時候，只有它抓得到。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PollInterval {
-    /// 完全不定時抓。只剩手動、開面板、睡眠喚醒、GFN 視窗轉換這幾種來源。
+    /// 不定時抓。開機第一圈仍然抓一次，之後只剩手動、開面板、睡眠喚醒、
+    /// GFN 視窗轉換這幾種來源。
     #[serde(rename = "off")]
     Off,
     /// 預設。比原本寫死的 5 分鐘長得多，又短到足以接住視窗偵測漏掉的那些場。

@@ -289,8 +289,8 @@ fn main() {
                     // 作法：設定頁改完立刻生效，不必為它開一條通知管道。
                     let interval =
                         gfnusage_lib::store::load_ui_state(&state.ui_state_path()).poll_interval;
-                    // 喚醒即使在「關閉」也抓。關掉的是定時，不是事件 ——
-                    // 睡了八小時之後系統匣掛著睡前的數字，正是這條要擋的。
+                    // 喚醒與開機第一圈即使在「關閉」也抓。關掉的是定時，不是
+                    // 事件。睡了八小時之後系統匣掛著睡前的數字，正是這條要擋的。
                     let fetch_due =
                         woke || commands::interval_elapsed(state.last_poll(), now, interval);
 

@@ -695,17 +695,21 @@ pub fn poll_due(state: &AppState) -> bool {
 /// 和 `poll_due` 是兩件事：那個是登入閘門，這個是時間閘門。兩個名字擺在
 /// 同一個 `if` 裡會讀錯，所以刻意不叫 `poll_due` 的近親。
 ///
-/// `last` 是 `None`（這個行程還沒抓過）一律到期，所以啟動時第一圈就會抓。
-/// 間隔設成「關閉」則永遠不到期 —— 喚醒與視窗事件不走這裡。
+/// `last` 是 `None`（這個行程還沒抓過）一律到期，「關閉」也一樣。關掉的是
+/// 定時，不是開機那一次。不然選「關閉」的人每次開機系統匣都是「–」，要
+/// 自己點開面板才有數字。抓過一次之後「關閉」就永遠不到期，那時剩下的
+/// 抓取來源是喚醒、視窗事件、開面板與使用者自己按，都不走這裡。
 pub fn interval_elapsed(
     last: Option<std::time::Instant>,
     now: std::time::Instant,
     interval: PollInterval,
 ) -> bool {
-    let Some(span) = interval.duration() else {
-        return false;
+    let Some(last) = last else {
+        return true;
     };
-    last.map_or(true, |last| now.duration_since(last) >= span)
+    interval
+        .duration()
+        .is_some_and(|span| now.duration_since(last) >= span)
 }
 
 /// 牆鐘比單調時鐘多走這麼多，就當作機器剛從睡眠中醒來。
@@ -1397,11 +1401,13 @@ mod tests {
     }
 
     /// 沒抓過就到期。不然全新安裝要等滿一個間隔才看得到第一個數字，
-    /// 而使用者選的可能是 24 小時。
+    /// 而使用者選的可能是 24 小時。「關閉」也一樣：關掉的是定時，不是
+    /// 開機那一次，否則選「關閉」的人每次開機系統匣都是「–」。
     #[test]
     fn the_first_tick_is_always_due() {
         let now = std::time::Instant::now();
         assert!(interval_elapsed(None, now, PollInterval::Hour24));
+        assert!(interval_elapsed(None, now, PollInterval::Off));
     }
 
     #[test]
@@ -1414,14 +1420,15 @@ mod tests {
         assert!(interval_elapsed(Some(longer_ago), now, PollInterval::Min30));
     }
 
-    /// 「關閉」的定義。喚醒與 GFN 視窗轉換不走這個函式，所以關掉之後
-    /// 剩下的抓取來源只有那些事件與使用者自己按。
+    /// 「關閉」的定義。開機那一次抓過之後就再也不到期，喚醒與 GFN 視窗
+    /// 轉換不走這個函式，所以剩下的抓取來源只有那些事件與使用者自己按。
     #[test]
-    fn nothing_is_ever_due_when_the_interval_is_off() {
+    fn an_off_interval_never_comes_due_after_the_first_fetch() {
         let now = std::time::Instant::now();
+        let just_now = now - std::time::Duration::from_secs(1);
         let long_ago = now - std::time::Duration::from_secs(86_400 * 7);
+        assert!(!interval_elapsed(Some(just_now), now, PollInterval::Off));
         assert!(!interval_elapsed(Some(long_ago), now, PollInterval::Off));
-        assert!(!interval_elapsed(None, now, PollInterval::Off));
     }
 
     #[test]
