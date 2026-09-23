@@ -20,12 +20,6 @@ const TICK: Duration = Duration::from_secs(30);
 /// 配速與預測會停在啟動時的數字。
 const PACE_INTERVAL: Duration = Duration::from_secs(300);
 
-/// 自動收起後多久之內的系統匣點擊，視為「關閉」而不是「開啟」。
-///
-/// 點圖示會先讓面板失焦，失焦處理器把它收起來，接著點擊事件才送到 —
-/// 沒有這個寬限期，面板就會在同一次點擊中收起又立刻重開，變成關不掉。
-const REOPEN_GRACE: Duration = Duration::from_millis(300);
-
 fn main() {
     gfnusage_lib::logging::log_panics();
 
@@ -89,17 +83,36 @@ fn main() {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         if let Some(window) = handle.get_webview_window(PANEL_LABEL) {
-                            // 這一下 hide 會再觸發 Focused(false)，於是下面那一段
-                            // 也會跑一次，把 last_auto_hide 蓋上時間戳。那正是要的：
-                            // 緊接著的系統匣點擊應該被當成「剛關掉」，不要立刻重開。
                             let _ = window.hide();
                         }
+                        // 緊接著的系統匣點擊應該被當成「剛關掉」，不要立刻重開。
+                        // 自己蓋時間戳，不靠 hide 觸發的 Focused(false)：那一段
+                        // 只在面板可見時才蓋。
+                        let state = handle.state::<Arc<AppState>>();
+                        *state.last_auto_hide.lock().unwrap() = Some(Instant::now());
                     }
                     // 標準 flyout 行為：點到別的地方就收起來。
                     WindowEvent::Focused(false) => {
-                        if let Some(window) = handle.get_webview_window(PANEL_LABEL) {
-                            let _ = window.hide();
+                        let Some(window) = handle.get_webview_window(PANEL_LABEL) else {
+                            return;
+                        };
+                        // 隱藏中的面板也會失焦：工作列 widget 的右鍵選單借它當擁有者，
+                        // muda 會先把它設成前景視窗，選單關掉後它還是前景，下一次點擊
+                        // 才把焦點拿走。那一下不是自動收起，蓋了時間戳的話，點在 widget
+                        // 上的那一下會被當成「剛關掉」吞掉。查不到可見與否就照舊蓋。
+                        let visible = window.is_visible().unwrap_or(true);
+                        log::info!(
+                            "面板：失焦，{}",
+                            if visible {
+                                "收起"
+                            } else {
+                                "隱藏中，不算自動收起"
+                            }
+                        );
+                        if !visible {
+                            return;
                         }
+                        let _ = window.hide();
                         let state = handle.state::<Arc<AppState>>();
                         *state.last_auto_hide.lock().unwrap() = Some(Instant::now());
                     }
@@ -145,22 +158,7 @@ fn main() {
                         return;
                     };
 
-                    let app = tray.app_handle();
-                    let state = app.state::<Arc<AppState>>();
-
-                    // 這一下點擊剛剛才讓面板失焦收起，所以它是關閉動作。
-                    let just_closed = state
-                        .last_auto_hide
-                        .lock()
-                        .unwrap()
-                        .is_some_and(|at| at.elapsed() < REOPEN_GRACE);
-                    if just_closed {
-                        return;
-                    }
-
-                    if let Some(window) = app.get_webview_window(PANEL_LABEL) {
-                        panel::show(&window, position);
-                    }
+                    panel::toggle_from_click(tray.app_handle(), position);
                 })
                 .build(app)?;
 
@@ -352,6 +350,7 @@ fn main() {
             commands::dismiss_tray_hint,
             commands::set_metric,
             commands::set_poll_interval,
+            commands::set_taskbar_widget,
             commands::app_version,
             commands::get_update_status,
             commands::check_update_now,

@@ -129,6 +129,12 @@ pub fn apply_face<R: Runtime>(tray: &TrayIcon<R>, face: &TrayFace) {
 /// 依目前的共用狀態重畫系統匣。所有會改動狀態的操作最後都呼叫這裡。
 /// 系統匣尚未建立時靜默略過。
 pub fn sync<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
+    // 現讀，跟 `panel_data` 同一個作法。不在 `AppState` 裡再放一份快取：
+    // 兩份來源遲早會有一份忘了更新。
+    let ui = crate::store::load_ui_state(&state.ui_state_path());
+    // 排在系統匣之前：系統匣還沒建起來時下面會提早 return，widget 不該跟著不畫。
+    crate::widget::sync(app, state, &ui);
+
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
@@ -136,11 +142,7 @@ pub fn sync<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
     let pace = state.pace.lock().unwrap().clone();
     let error = state.display_error();
     let needs_login = state.needs_login.load(Ordering::SeqCst);
-    // 現讀，跟 `panel_data` 同一個作法。不在 `AppState` 裡再放一份快取：
-    // 兩份來源遲早會有一份忘了更新。
-    let stale_after = crate::store::load_ui_state(&state.ui_state_path())
-        .poll_interval
-        .stale_after();
+    let stale_after = ui.poll_interval.stale_after();
     apply_face(
         &tray,
         &face(

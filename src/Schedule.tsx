@@ -4,7 +4,9 @@ import type {
   PollInterval,
   Schedule,
   ScheduleException,
+  TaskbarWidget,
   WeeklyWindow,
+  WidgetSide,
 } from "./types";
 
 const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
@@ -26,6 +28,19 @@ const POLL_INTERVALS: [PollInterval, string][] = [
   ["1h", "1 小時"],
   ["6h", "6 小時"],
   ["24h", "24 小時"],
+];
+
+/**
+ * 工作列顯示那一排。「關閉」跟兩邊排在一起，一次點擊就是一個結果。
+ *
+ * 寫左右，不寫「系統匣」：使用者不一定知道系統匣是哪一塊（2026-09-23）。
+ * 標題已經是「工作列顯示」，按鈕裡不再寫一次「工作列」。照工作列上的位置
+ * 排，左邊在前。
+ */
+const WIDGET_CHOICES: ["off" | WidgetSide, string][] = [
+  ["off", "關閉"],
+  ["taskbarLeft", "左邊"],
+  ["trayLeft", "右邊"],
 ];
 
 /**
@@ -107,23 +122,29 @@ export default function ScheduleForm({
   busy,
   metric,
   pollInterval,
+  taskbarWidget,
+  widgetSupported,
   onSave,
   onExport,
   onImport,
   onMetric,
   onPollInterval,
+  onTaskbarWidget,
   onClose,
 }: {
   value: Schedule;
   busy: boolean;
   metric: Metric;
   pollInterval: PollInterval;
+  taskbarWidget: TaskbarWidget;
+  widgetSupported: boolean;
   /// 這三個回傳的 promise 被 reject 時，訊息會顯示在表單上。
   onSave: (schedule: Schedule) => Promise<void> | void;
   onExport: (schedule: Schedule) => Promise<void> | void;
   onImport: () => Promise<void> | void;
   onMetric: (metric: Metric) => Promise<void> | void;
   onPollInterval: (interval: PollInterval) => Promise<void> | void;
+  onTaskbarWidget: (widget: TaskbarWidget) => Promise<void> | void;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<Schedule>(value);
@@ -216,6 +237,19 @@ export default function ScheduleForm({
     );
   };
 
+  const widgetChoice = taskbarWidget.enabled ? taskbarWidget.side : "off";
+  const chooseWidget = (next: "off" | WidgetSide) => {
+    setError(null);
+    // 關掉時留著原本那一邊，下次打開回到同一邊。
+    const widget: TaskbarWidget =
+      next === "off"
+        ? { ...taskbarWidget, enabled: false }
+        : { enabled: true, side: next };
+    void Promise.resolve(onTaskbarWidget(widget)).catch((reason) =>
+      setError(messageOf(reason)),
+    );
+  };
+
   const importFile = () => {
     setError(null);
     void Promise.resolve(onImport()).catch((reason) =>
@@ -237,9 +271,13 @@ export default function ScheduleForm({
       </header>
 
       <div className="setting">
-        <span>主要數字</span>
+        <span id="metric-label">主要數字</span>
         {/* 這個不走底下時段那套 debounce：只有兩個值，點了就該看到結果。 */}
-        <div className="setting__choice">
+        <div
+          className="setting__choice"
+          role="group"
+          aria-labelledby="metric-label"
+        >
           {(["remaining", "used"] as const).map((option) => (
             <button
               key={option}
@@ -256,8 +294,12 @@ export default function ScheduleForm({
 
       {/* 五個選項排不進「左名稱右選項」那一行，所以名稱自己一行。 */}
       <div className="setting setting--stacked">
-        <span>資料更新</span>
-        <div className="setting__choice">
+        <span id="poll-interval-label">資料更新</span>
+        <div
+          className="setting__choice"
+          role="group"
+          aria-labelledby="poll-interval-label"
+        >
           {POLL_INTERVALS.map(([option, label]) => (
             <button
               key={option}
@@ -271,6 +313,29 @@ export default function ScheduleForm({
           ))}
         </div>
       </div>
+
+      {widgetSupported && (
+        <div className="setting setting--stacked">
+          <span id="taskbar-widget-label">工作列顯示</span>
+          <div
+            className="setting__choice"
+            role="group"
+            aria-labelledby="taskbar-widget-label"
+          >
+            {WIDGET_CHOICES.map(([option, label]) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={widgetChoice === option}
+                className={widgetChoice === option ? "chip chip--on" : "chip"}
+                onClick={() => chooseWidget(option)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <h2 className="section">不可遊玩時段</h2>
 

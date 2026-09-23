@@ -411,6 +411,11 @@ export default function App() {
         onPollInterval={(next) =>
           run(() => invoke("set_poll_interval", { interval: next }))
         }
+        taskbarWidget={data.taskbarWidget}
+        widgetSupported={data.widgetSupported}
+        onTaskbarWidget={(widget) =>
+          run(() => invoke("set_taskbar_widget", { widget }))
+        }
         // 自動儲存，所以不走 `run()`：它會把按鈕鎖起來，打字時一路閃。
         // 也不關掉表單 —— 存檔不再是離開的動作了。
         // 不吞錯誤：reject 會被表單接住，顯示在匯出入鍵上方。

@@ -12,7 +12,7 @@ const MAX_PX: u32 = 30;
 const MIN_PX: u32 = 8;
 
 /// 內嵌字型，避免依賴系統字型探索 —— 系統匣圖示需要每台機器長得一樣。
-const FONT_DATA: &[u8] = include_bytes!("../../assets/Roboto-Bold.ttf");
+pub(crate) const FONT_DATA: &[u8] = include_bytes!("../../assets/Roboto-Bold.ttf");
 
 /// 各顯示狀態的顏色。超前消耗與已用完同為紅色（spec §7.2），
 /// 兩者靠驚嘆號區分。

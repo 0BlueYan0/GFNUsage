@@ -3,7 +3,12 @@
 //! 放在 lib 而不是 `main.rs`：登入完成與首次啟動都要把面板叫出來，
 //! 而那兩處都在指令端，碰不到 binary 裡的函式。
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Runtime, WebviewWindow};
+
+use crate::AppState;
 
 pub const PANEL_LABEL: &str = "main";
 
@@ -25,6 +30,13 @@ pub const SHOWN_EVENT: &str = "panel-shown";
 ///
 /// 收到這個事件只能重讀，不能再抓一次：抓完會再送一次事件，那是迴圈。
 pub const REFRESHED_EVENT: &str = "data-refreshed";
+
+/// 自動收起後多久之內的點擊，視為「關閉」而不是「開啟」。
+///
+/// 點圖示會先讓面板失焦，失焦處理器把它收起來，接著點擊事件才送到 —
+/// 沒有這個寬限期，面板就會在同一次點擊中收起又立刻重開，變成關不掉。
+/// 工作列 widget 也是同一個情況，所以放在這裡讓兩邊共用。
+const REOPEN_GRACE: Duration = Duration::from_millis(300);
 
 /// 面板與螢幕可用區邊緣的間距。
 const PANEL_MARGIN: i32 = 12;
@@ -100,4 +112,55 @@ pub fn show_default<R: Runtime>(app: &AppHandle<R>) {
         _ => PhysicalPosition::new(0.0, 0.0),
     };
     show(&window, near);
+}
+
+/// 點了系統匣圖示或工作列 widget。面板剛因為這一下失焦收起的話，這一下是關閉。
+pub fn toggle_from_click<R: Runtime>(app: &AppHandle<R>, position: PhysicalPosition<f64>) {
+    let state = app.state::<Arc<AppState>>();
+    let since = state.last_auto_hide.lock().unwrap().map(|at| at.elapsed());
+    let just_closed = since.is_some_and(|d| d < REOPEN_GRACE);
+    // 點下去沒反應時要分得出是被寬限期吞掉、還是根本沒收到點擊，所以沒吞的也記。
+    match since {
+        Some(d) => log::info!(
+            "面板：點擊，上次自動收起在 {} 毫秒前{}",
+            d.as_millis(),
+            if just_closed { "，當成關閉" } else { "" }
+        ),
+        None => log::info!("面板：點擊，沒有自動收起過"),
+    }
+    if just_closed {
+        return;
+    }
+    if let Some(window) = app.get_webview_window(PANEL_LABEL) {
+        show(&window, position);
+    }
+}
+
+/// 在 `at`（螢幕座標）叫出系統匣那一份選單。
+///
+/// 借面板那扇視窗來叫：`popup_menu_at` 要一扇視窗，它隱藏著也叫得出來（第 0 步實測）。
+/// 座標要換成相對於那扇視窗，傳螢幕座標的話選單會畫到螢幕外面。
+/// 選單事件進的是 `main.rs` 裡 `TrayIconBuilder::on_menu_event` 那一個 handler：
+/// Tauri 把它註冊在全域的選單監聽清單裡（`tray/mod.rs` 的 `register`）。
+pub fn popup_tray_menu<R: Runtime>(app: &AppHandle<R>, at: PhysicalPosition<i32>) {
+    let Some(window) = app.get_webview_window(PANEL_LABEL) else {
+        return;
+    };
+    let update = app
+        .try_state::<crate::update::UpdateState>()
+        .and_then(|u| u.available());
+    let menu = match crate::tray::menu::build(app, update.as_deref()) {
+        Ok(menu) => menu,
+        Err(e) => {
+            log::warn!("選單建不起來：{e}");
+            return;
+        }
+    };
+    let origin = window.inner_position().unwrap_or_default();
+    let relative = PhysicalPosition::new(at.x - origin.x, at.y - origin.y);
+    log::info!("面板：選單開");
+    if let Err(e) = window.popup_menu_at(&menu, relative) {
+        log::warn!("選單叫不出來：{e}");
+    }
+    log::info!("面板：選單關");
 }

@@ -72,6 +72,15 @@ export type Metric = "remaining" | "used";
 /** 定時抓取的間隔。`off` 是完全不定時抓。 */
 export type PollInterval = "off" | "30m" | "1h" | "6h" | "24h";
 
+/** 工作列 widget 擺在哪一邊。 */
+export type WidgetSide = "trayLeft" | "taskbarLeft";
+
+/** 工作列 widget 的設定。關掉時 `side` 還留著，下次打開回到同一邊。 */
+export interface TaskbarWidget {
+  enabled: boolean;
+  side: WidgetSide;
+}
+
 /** 一場遊玩紀錄。時間是 ISO 8601 的 UTC 字串。 */
 export interface PlaySession {
   gameTitle: string;
@@ -122,6 +131,9 @@ export interface PanelData {
   loginPending: boolean;
   metric: Metric;
   pollInterval: PollInterval;
+  taskbarWidget: TaskbarWidget;
+  /** 這台機器有沒有工作列 widget。只有 Windows 是 true。 */
+  widgetSupported: boolean;
   /** 查到、使用者還沒關掉提示的新版本。沒有就是已經最新。 */
   updateVersion: string | null;
 }

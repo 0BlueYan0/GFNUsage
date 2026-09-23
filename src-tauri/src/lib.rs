@@ -11,6 +11,7 @@ pub mod tray;
 pub mod trend;
 pub mod update;
 pub mod watcher;
+pub mod widget;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;

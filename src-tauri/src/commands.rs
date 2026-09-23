@@ -54,6 +54,10 @@ pub struct PanelData {
     pub metric: store::Metric,
     /// 定時抓取的間隔。設定頁要拿它畫出目前選中的是哪一個。
     pub poll_interval: PollInterval,
+    /// 工作列 widget 的設定。
+    pub taskbar_widget: store::TaskbarWidget,
+    /// 這台機器有沒有工作列 widget。只有 Windows 有，macOS 的設定頁不畫那一列。
+    pub widget_supported: bool,
 
     /// 最近幾場，新的在前。抓不到逐場紀錄時是空的。
     pub recent_sessions: Vec<crate::api::playtime::PlaySession>,
@@ -189,6 +193,9 @@ pub fn panel_data(state: &AppState) -> PanelData {
         login_pending: state.login_pending.load(Ordering::SeqCst),
         metric: ui.metric,
         poll_interval: ui.poll_interval,
+        taskbar_widget: ui.taskbar_widget,
+        // 跟 `show_tray_hint` 同一個理由在這裡判平台。
+        widget_supported: cfg!(windows),
         // `fetch_session_history` 已經排好新的在前。
         recent_sessions: state
             .sessions
@@ -219,9 +226,18 @@ pub fn dismiss_hint(state: &AppState) -> Result<(), String> {
 
 /// 切換主要數字。立刻寫檔，不走設定表單那套「按儲存才生效」——
 /// 它只有兩個值，看得到結果就知道選了什麼。
+///
+/// 寫完重畫：系統匣不看這個值，但工作列 widget 看。不重畫的話 widget 要等
+/// 下一次配速重算才換，最久五分鐘。
 #[tauri::command]
-pub fn set_metric(state: State<'_, Arc<AppState>>, metric: store::Metric) -> Result<(), String> {
-    write_metric(state.inner(), metric)
+pub fn set_metric<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, Arc<AppState>>,
+    metric: store::Metric,
+) -> Result<(), String> {
+    write_metric(state.inner(), metric)?;
+    tray::sync(&app, state.inner());
+    Ok(())
 }
 
 pub fn write_metric(state: &AppState, metric: store::Metric) -> Result<(), String> {
@@ -250,6 +266,25 @@ pub fn write_poll_interval(state: &AppState, interval: PollInterval) -> Result<(
     let path = state.ui_state_path();
     let mut ui = store::load_ui_state(&path);
     ui.poll_interval = interval;
+    store::save_ui_state(&path, &ui)
+}
+
+/// 開關工作列 widget、換邊。寫完立刻重畫，`widget::sync` 讀的就是這個檔案。
+#[tauri::command]
+pub fn set_taskbar_widget<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, Arc<AppState>>,
+    widget: store::TaskbarWidget,
+) -> Result<(), String> {
+    write_taskbar_widget(state.inner(), widget)?;
+    tray::sync(&app, state.inner());
+    Ok(())
+}
+
+pub fn write_taskbar_widget(state: &AppState, widget: store::TaskbarWidget) -> Result<(), String> {
+    let path = state.ui_state_path();
+    let mut ui = store::load_ui_state(&path);
+    ui.taskbar_widget = widget;
     store::save_ui_state(&path, &ui)
 }
 
@@ -1472,17 +1507,42 @@ mod tests {
         );
     }
 
-    /// 兩個設定共用一個檔案，寫一個不能把另一個洗掉。
+    /// 幾個設定共用一個檔案，寫一個不能把另一個洗掉。
     #[tokio::test]
     async fn writing_one_ui_setting_leaves_the_other_alone() {
         let h = harness(false).await;
+        let widget = store::TaskbarWidget {
+            enabled: true,
+            side: store::Side::TaskbarLeft,
+        };
 
         write_metric(&h.state, store::Metric::Used).unwrap();
         write_poll_interval(&h.state, PollInterval::Hour6).unwrap();
+        write_taskbar_widget(&h.state, widget).unwrap();
 
         let data = panel_data(&h.state);
         assert_eq!(data.metric, store::Metric::Used);
         assert_eq!(data.poll_interval, PollInterval::Hour6);
+        assert_eq!(data.taskbar_widget, widget);
+    }
+
+    /// 預設關閉，選過之後留在檔案裡。
+    #[tokio::test]
+    async fn the_taskbar_widget_defaults_to_off_and_survives() {
+        let h = harness(false).await;
+        assert!(!panel_data(&h.state).taskbar_widget.enabled);
+
+        let widget = store::TaskbarWidget {
+            enabled: true,
+            side: store::Side::TrayLeft,
+        };
+        write_taskbar_widget(&h.state, widget).unwrap();
+
+        assert_eq!(panel_data(&h.state).taskbar_widget, widget);
+        assert_eq!(
+            store::load_ui_state(&h.state.ui_state_path()).taskbar_widget,
+            widget
+        );
     }
 
     /// 沒抓過就到期。不然全新安裝要等滿一個間隔才看得到第一個數字，

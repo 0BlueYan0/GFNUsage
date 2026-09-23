@@ -1,7 +1,7 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ScheduleForm from "./Schedule";
-import type { Schedule } from "./types";
+import type { Schedule, TaskbarWidget } from "./types";
 
 const empty: Schedule = { weekly: [], exceptions: [] };
 
@@ -15,6 +15,13 @@ const workdays: Schedule = {
     },
   ],
   exceptions: [],
+};
+
+/** 跟工作列 widget 無關的測試用這一組：macOS 的樣子，那一列不畫。 */
+const widgetProps = {
+  taskbarWidget: { enabled: false, side: "trayLeft" } as TaskbarWidget,
+  widgetSupported: false,
+  onTaskbarWidget: vi.fn(),
 };
 
 // 自動儲存有 debounce，測試得自己把時間推過去。
@@ -37,7 +44,7 @@ describe("ScheduleForm", () => {
   it("剛打開不會寫出去", async () => {
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
     await autosave();
     expect(onSave).not.toHaveBeenCalled();
@@ -48,7 +55,7 @@ describe("ScheduleForm", () => {
     const onSave = vi.fn();
     const onClose = vi.fn();
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={onClose} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={onClose} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "星期六" }));
@@ -60,7 +67,7 @@ describe("ScheduleForm", () => {
 
   it("沒有任何時段時顯示全天可遊玩", () => {
     render(
-      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
     expect(screen.getByText("全天可遊玩", { selector: "p" })).toBeTruthy();
   });
@@ -69,7 +76,7 @@ describe("ScheduleForm", () => {
   it("選主要數字會立刻回報", () => {
     const onMetric = vi.fn();
     render(
-      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={onMetric} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={onMetric} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "已使用" }));
@@ -79,7 +86,7 @@ describe("ScheduleForm", () => {
 
   it("目前選的那個看得出來", () => {
     render(
-      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="used" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="used" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
 
     expect(
@@ -93,7 +100,7 @@ describe("ScheduleForm", () => {
   it("選更新間隔會立刻回報", () => {
     const onPollInterval = vi.fn();
     render(
-      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={onPollInterval} />,
+      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={onPollInterval} {...widgetProps} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "6 小時" }));
@@ -105,7 +112,7 @@ describe("ScheduleForm", () => {
   it("關閉也是選得起來的一格", () => {
     const onPollInterval = vi.fn();
     render(
-      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="off" onPollInterval={onPollInterval} />,
+      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="off" onPollInterval={onPollInterval} {...widgetProps} />,
     );
 
     expect(
@@ -118,7 +125,7 @@ describe("ScheduleForm", () => {
 
   it("列出既有的每週時段", () => {
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
     expect(screen.getByDisplayValue("09:00")).toBeTruthy();
     expect(screen.getByDisplayValue("18:00")).toBeTruthy();
@@ -127,7 +134,7 @@ describe("ScheduleForm", () => {
 
   it("新增時段會給一個可用的預設值", () => {
     render(
-      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "新增每週時段" }));
     expect(screen.getByDisplayValue("00:00")).toBeTruthy();
@@ -136,7 +143,7 @@ describe("ScheduleForm", () => {
 
   it("刪掉時段就從清單消失", () => {
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "刪除這個時段" }));
     expect(screen.queryByDisplayValue("上班")).toBeNull();
@@ -146,7 +153,7 @@ describe("ScheduleForm", () => {
   it("沒有選任何星期時不寫出去", async () => {
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
     for (const day of ["一", "二", "三", "四"]) {
       fireEvent.click(screen.getByRole("button", { name: `星期${day}` }));
@@ -164,7 +171,7 @@ describe("ScheduleForm", () => {
   it("時間輸入換算回分鐘數才寫出去", async () => {
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
 
     fireEvent.change(screen.getByLabelText("開始時間"), {
@@ -182,7 +189,7 @@ describe("ScheduleForm", () => {
   it("連續改動只寫一次", async () => {
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
     const start = screen.getByLabelText("開始時間");
 
@@ -207,7 +214,7 @@ describe("ScheduleForm", () => {
     };
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={overnight} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={overnight} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "星期六" }));
@@ -224,7 +231,7 @@ describe("ScheduleForm", () => {
   it("後端拒絕時把訊息顯示在表單上", async () => {
     const onSave = vi.fn().mockRejectedValue("寫入設定檔失敗：拒絕存取");
     render(
-      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={workdays} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "星期六" }));
@@ -240,7 +247,7 @@ describe("ScheduleForm", () => {
       exceptions: [],
     };
     render(
-      <ScheduleForm value={allDay} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={allDay} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
     expect(screen.getByRole("checkbox", { name: "整天" })).toBeTruthy();
     expect(screen.queryByLabelText("開始時間")).toBeNull();
@@ -249,7 +256,7 @@ describe("ScheduleForm", () => {
   it("勾起整天後寫出 0 到 1440", async () => {
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={empty} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={empty} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "新增每週時段" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "整天" }));
@@ -273,7 +280,7 @@ describe("ScheduleForm", () => {
     };
     const onSave = vi.fn();
     render(
-      <ScheduleForm value={blank} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={blank} busy={false} onSave={onSave} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
     await autosave();
     expect(screen.getByText(/日期還沒填完/)).toBeTruthy();
@@ -293,7 +300,7 @@ describe("ScheduleForm", () => {
       ],
     };
     render(
-      <ScheduleForm value={backwards} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} />,
+      <ScheduleForm value={backwards} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
     );
     await autosave();
     expect(screen.getByText(/結束日期早於開始日期/)).toBeTruthy();
@@ -310,7 +317,7 @@ describe("ScheduleForm 的匯出與匯入", () => {
         onSave={vi.fn()}
         onExport={onExport}
         onImport={vi.fn()}
-        onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()}
+        onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps}
       />,
     );
 
@@ -328,7 +335,7 @@ describe("ScheduleForm 的匯出與匯入", () => {
         onSave={vi.fn()}
         onExport={vi.fn().mockRejectedValue("寫入設定檔失敗：拒絕存取")}
         onImport={vi.fn()}
-        onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()}
+        onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps}
       />,
     );
 
@@ -346,7 +353,7 @@ describe("ScheduleForm 的匯出與匯入", () => {
         onSave={vi.fn()}
         onExport={vi.fn()}
         onImport={vi.fn().mockRejectedValue("設定檔格式錯誤：expected value")}
-        onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()}
+        onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps}
       />,
     );
 
@@ -354,5 +361,69 @@ describe("ScheduleForm 的匯出與匯入", () => {
 
     await act(async () => {});
     expect(screen.getByText(/設定檔格式錯誤/)).toBeTruthy();
+  });
+});
+
+describe("ScheduleForm 的工作列顯示", () => {
+  function renderWidget(
+    taskbarWidget: TaskbarWidget,
+    onTaskbarWidget = vi.fn(),
+  ) {
+    render(
+      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} taskbarWidget={taskbarWidget} widgetSupported={true} onTaskbarWidget={onTaskbarWidget} />,
+    );
+    // 「資料更新」那一排也有一格「關閉」，限定在這一排裡找。
+    return within(screen.getByRole("group", { name: "工作列顯示" }));
+  }
+
+  it("標出目前的那一格", () => {
+    const row = renderWidget({ enabled: true, side: "taskbarLeft" });
+    expect(row.getByRole("button", { name: "左邊", pressed: true })).toBeTruthy();
+    expect(row.getByRole("button", { name: "關閉", pressed: false })).toBeTruthy();
+  });
+
+  it("關著的時候標的是關閉", () => {
+    const row = renderWidget({ enabled: false, side: "taskbarLeft" });
+    expect(row.getByRole("button", { name: "關閉", pressed: true })).toBeTruthy();
+    expect(row.getByRole("button", { name: "左邊", pressed: false })).toBeTruthy();
+  });
+
+  /// 關掉時記住原本那一邊，下次打開回到同一邊。
+  it("關閉時保留原本那一邊", () => {
+    const onTaskbarWidget = vi.fn();
+    const row = renderWidget({ enabled: true, side: "taskbarLeft" }, onTaskbarWidget);
+    fireEvent.click(row.getByRole("button", { name: "關閉" }));
+    expect(onTaskbarWidget).toHaveBeenCalledWith({ enabled: false, side: "taskbarLeft" });
+  });
+
+  /// 使用者看到的是工作列的左右，不是「系統匣」這個詞。
+  it("右邊對應系統匣那一側", () => {
+    const onTaskbarWidget = vi.fn();
+    const row = renderWidget({ enabled: false, side: "taskbarLeft" }, onTaskbarWidget);
+    fireEvent.click(row.getByRole("button", { name: "右邊" }));
+    expect(onTaskbarWidget).toHaveBeenCalledWith({ enabled: true, side: "trayLeft" });
+  });
+
+  it("按鈕照工作列上的位置排", () => {
+    const row = renderWidget({ enabled: false, side: "trayLeft" });
+    expect(row.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "關閉",
+      "左邊",
+      "右邊",
+    ]);
+  });
+
+  it("選一邊就是打開", () => {
+    const onTaskbarWidget = vi.fn();
+    const row = renderWidget({ enabled: false, side: "trayLeft" }, onTaskbarWidget);
+    fireEvent.click(row.getByRole("button", { name: "左邊" }));
+    expect(onTaskbarWidget).toHaveBeenCalledWith({ enabled: true, side: "taskbarLeft" });
+  });
+
+  it("沒有工作列的平台不畫這一排", () => {
+    render(
+      <ScheduleForm value={empty} busy={false} onSave={vi.fn()} onExport={vi.fn()} onImport={vi.fn()} onClose={vi.fn()} metric="remaining" onMetric={vi.fn()} pollInterval="30m" onPollInterval={vi.fn()} {...widgetProps} />,
+    );
+    expect(screen.queryByRole("group", { name: "工作列顯示" })).toBeNull();
   });
 });

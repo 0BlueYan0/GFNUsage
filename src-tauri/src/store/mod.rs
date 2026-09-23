@@ -268,6 +268,21 @@ pub struct UiState {
     /// 和 `metric` 同一個理由放這裡：這台機器要多勤地抓，跟不可遊玩時段是
     /// 兩件事，不該跟著 `schedule.json` 匯出到別台。
     pub poll_interval: PollInterval,
+
+    /// 工作列 widget。和 `metric` 同一個理由放這裡：工作列長什麼樣子是這台機器的事。
+    pub taskbar_widget: TaskbarWidget,
+}
+
+pub use crate::widget::layout::Side;
+
+/// 工作列 widget 的設定。只有 Windows 用得到，macOS 讀到了也不理。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TaskbarWidget {
+    /// 預設關閉。它掛進 explorer 的工作列，位置出錯或跟其他工作列工具衝突時，
+    /// 只影響選了它的人。
+    pub enabled: bool,
+    pub side: Side,
 }
 
 pub fn ui_state_path(dir: &Path) -> PathBuf {
@@ -425,6 +440,10 @@ mod tests {
             device_id: "105c3409-aace-4e9b-a3dd-30260a61a188".into(),
             update_dismissed: "0.1.1".into(),
             poll_interval: PollInterval::Hour6,
+            taskbar_widget: TaskbarWidget {
+                enabled: true,
+                side: Side::TaskbarLeft,
+            },
         };
 
         save_ui_state(&path, &ui).unwrap();
@@ -451,6 +470,27 @@ mod tests {
         assert_eq!(ui.metric, Metric::Used);
         assert_eq!(ui.device_id, "105c3409-aace-4e9b-a3dd-30260a61a188");
         assert_eq!(ui.poll_interval, PollInterval::Min30);
+        // widget 預設關閉：升級上來的人工作列不會突然多一塊東西。
+        assert_eq!(ui.taskbar_widget, TaskbarWidget::default());
+        assert!(!ui.taskbar_widget.enabled);
+        assert_eq!(ui.taskbar_widget.side, Side::TrayLeft);
+    }
+
+    /// 檔案裡寫的是前端看得懂的 camelCase。
+    #[test]
+    fn the_taskbar_widget_is_written_in_camel_case() {
+        let ui = UiState {
+            taskbar_widget: TaskbarWidget {
+                enabled: true,
+                side: Side::TaskbarLeft,
+            },
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&ui).unwrap();
+        assert!(
+            text.contains(r#""taskbarWidget":{"enabled":true,"side":"taskbarLeft"}"#),
+            "{text}"
+        );
     }
 
     /// 過期門檻跟著間隔走。間隔比門檻長的話圖示會一直淡著，那個訊號就沒用了。

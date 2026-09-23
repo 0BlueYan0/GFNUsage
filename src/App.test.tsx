@@ -35,6 +35,8 @@ function panelData(remaining: number) {
     loginPending: false,
     metric: "remaining",
     pollInterval: "30m",
+    taskbarWidget: { enabled: false, side: "trayLeft" },
+    widgetSupported: false,
     recentSessions: [],
     daily: [],
     updateVersion: null,
