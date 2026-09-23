@@ -26,6 +26,9 @@ burning through it too fast.
 ## Features
 
 - ✅ **Remaining hours, always visible** — no need to open the GFN client
+- ✅ **On the taskbar** — on Windows, the remaining or used time and a
+  progress bar sit on the taskbar itself, on the left or the right. Turn it
+  on in Settings
 - ✅ **Rollover and purchased time** — shown as part of the period's total
 - ✅ **Pace threshold** — how much *should* you have used by now? Go past it
   and the display turns red
