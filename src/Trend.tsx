@@ -3,7 +3,12 @@ import type { DailyPoint, DisplayState, Metric } from "./types";
 
 /** 畫布尺寸。面板 360 寬扣掉左右各 16px 的 padding 剩 328。 */
 const WIDTH = 328;
-const HEIGHT = 64;
+/**
+ * 高度要和 `App.css` 的 `.trend` 一樣。兩邊不同的話 svg 會等比例縮小，
+ * 線就碰不到左右兩邊。64 的時候主面板有更新橫幅時會多出 1px，捲軸因此
+ * 出現，內容跟著縮 15px。
+ */
+const HEIGHT = 60;
 /** 左右留 2px，2px 的線才不會被畫布邊緣切掉一半。 */
 const INSET_X = 2;
 /** 上下留 5px，線與今天那一點才不會貼著邊。 */

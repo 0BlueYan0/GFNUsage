@@ -63,7 +63,7 @@ describe("Trend", () => {
     const remaining = firstPoint(draw(daily()), ".trend__actual");
     const used = firstPoint(draw(daily(), "used"), ".trend__actual");
     expect(remaining.y).toBe(5);
-    expect(used.y).toBe(59);
+    expect(used.y).toBe(55);
     expect(remaining.x).toBe(used.x);
   });
 

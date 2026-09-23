@@ -531,14 +531,15 @@ textarea {
 }
 
 /* 本期用量走勢。
-   高度寫死 64px。`.panel__body` 是唯一會捲的那一層，圖再高就把配速那幾列
-   推到捲軸下面。顏色掛在 svg 上讓兩個標記都吃 `currentColor`，這樣狀態
-   修飾詞只要一組。 */
+   高度寫死 60px，要和 `Trend.tsx` 的 HEIGHT 一樣。`.panel__body` 是唯一會捲
+   的那一層，64px 的時候有更新橫幅就多出 1px，捲軸因此出現，內容跟著縮
+   15px。顏色掛在 svg 上讓兩個標記都吃 `currentColor`，這樣狀態修飾詞只要
+   一組。 */
 .trend {
   display: block;
   flex: 0 0 auto;
   width: 100%;
-  height: 64px;
+  height: 60px;
   color: var(--accent);
 }
 
