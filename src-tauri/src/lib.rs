@@ -60,6 +60,16 @@ pub struct AppState {
     /// `None` 與空 `Vec` 是兩件事：`None` 是這次沒抓到（拿它算今天用了多少
     /// 會得到零，等於把玩過的時間當成沒玩），空 `Vec` 是本期真的沒玩過。
     pub sessions: Mutex<Option<Vec<crate::api::playtime::PlaySession>>>,
+
+    /// 上次成功抓到的逐場紀錄，只給走勢圖用。
+    ///
+    /// 和 `sessions` 分開存，是因為那個的 `None` 有語意（這次沒抓到），
+    /// `used_today` 與 `recent_play` 靠它分辨「不知道」與「沒玩」。走勢圖
+    /// 不需要這個分辨：抓失敗那一輪，快照已經換新，圖要用新的 U 當錨點
+    /// 重畫，拿上一份成功的場次回推過去的日子，比留著整張舊圖準。留舊圖
+    /// 的話，換期那一輪 playtime 沒回，圖上是上個月的日期，主要數字卻是
+    /// 這個月的。
+    pub last_good_sessions: Mutex<Option<Vec<crate::api::playtime::PlaySession>>>,
     pub last_error: Mutex<Option<String>>,
 
     /// 設定檔讀不動時的訊息。與 `last_error` 分開存，檔案修好就能單獨清掉
@@ -74,9 +84,8 @@ pub struct AppState {
 
     /// 最近一次算出的逐日累計，給面板那張折線圖。
     ///
-    /// 存下來是因為 `sessions` 抓不到時是 `None`，而那是 `used_today` 要的
-    /// 語意（見上面 `sessions` 的註解），不能為了圖去改它。圖只要上次那份
-    /// 還在就照畫，免得一次抓失敗就讓整張圖消失到下一次抓為止。
+    /// 每次 `recompute_pace` 都從 `last_good_sessions` 重建，錨點因此永遠是
+    /// 目前快照的 U。存下來只是讓 `panel_data` 不必每次開面板重算。
     pub trend: Mutex<Vec<crate::trend::DailyPoint>>,
 
     /// 設定的記憶體快取。每個輪詢週期會從檔案重讀，手動改檔案不必重開程式。
@@ -167,6 +176,7 @@ impl AppState {
             settings_dir,
             snapshot: Mutex::new(None),
             sessions: Mutex::new(None),
+            last_good_sessions: Mutex::new(None),
             pace: Mutex::new(None),
             trend: Mutex::new(Vec::new()),
             schedule: Mutex::new(schedule),

@@ -449,19 +449,18 @@ pub fn recompute_pace(state: &AppState, now: DateTime<Utc>) {
         .as_ref()
         .and_then(|snapshot| pace::compute(snapshot, &schedule, now, tz, used_today, recent));
 
-    // 折線圖只在抓到逐場紀錄的那些週期重算，抓不到就留著上一份 —— 一次
-    // 失敗不該讓整張圖消失到下一個週期。免費方案與本期結束是例外：那時
-    // `compute` 回 `None`，圖要跟著清掉，否則降成免費之後配額那一區已經
-    // 不見了，圖還留在畫面上。
+    // 走勢圖每一輪都從上次成功的逐場紀錄重建，錨點因此永遠是目前快照的 U。
+    // 這一輪 playtime 沒回也照重建。留著舊圖的話，圖的末端與進度條指到不同
+    // 的位置，虛線用的還是上一輪的速度，換期那一輪更是上個月的日期配這個月
+    // 的數字。免費方案與本期結束時 `compute` 回 `None`，圖跟著清掉，否則降成
+    // 免費之後配額那一區已經不見了，圖還留在畫面上。
     //
     // 場次先複製出來再鎖 `trend`，兩把鎖不同時持有。
-    let sessions = state.sessions.lock().unwrap().clone();
-    match (snapshot.as_ref(), report.as_ref()) {
-        (Some(snapshot), Some(pace)) => {
-            if let Some(sessions) = sessions.as_deref() {
-                *state.trend.lock().unwrap() =
-                    trend::build(sessions, snapshot, pace.burn_rate, &schedule, now, tz);
-            }
+    let sessions = state.last_good_sessions.lock().unwrap().clone();
+    match (snapshot.as_ref(), report.as_ref(), sessions.as_deref()) {
+        (Some(snapshot), Some(pace), Some(sessions)) => {
+            *state.trend.lock().unwrap() =
+                trend::build(sessions, snapshot, pace.burn_rate, &schedule, now, tz);
         }
         _ => state.trend.lock().unwrap().clear(),
     }
@@ -768,6 +767,11 @@ fn reset_state(state: &AppState) {
     *state.snapshot.lock().unwrap() = None;
     *state.pace.lock().unwrap() = None;
     *state.last_error.lock().unwrap() = None;
+    // 逐場紀錄與走勢圖也是上一個帳號的。留著的話，下一個帳號第一次抓時
+    // playtime 沒回，面板上就是前一個帳號的圖。
+    *state.sessions.lock().unwrap() = None;
+    *state.last_good_sessions.lock().unwrap() = None;
+    state.trend.lock().unwrap().clear();
     state.needs_login.store(false, Ordering::SeqCst);
 }
 
@@ -817,13 +821,20 @@ async fn fetch_sessions(state: &AppState, id_token: &str, span_start: Option<Dat
     )
     .await;
 
-    *state.sessions.lock().unwrap() = match fetched {
+    let sessions = match fetched {
         Ok(sessions) => Some(sessions),
         Err(e) => {
             log::warn!("逐場遊玩紀錄抓不到，今日額度改用快照歷史：{e}");
             None
         }
     };
+    // 成功的那份另外留一份給走勢圖。失敗時 `sessions` 要是 `None`（那是
+    // `used_today` 的語意），而走勢圖那一輪照樣要用新快照重畫，見
+    // `AppState::last_good_sessions`。
+    if let Some(sessions) = &sessions {
+        *state.last_good_sessions.lock().unwrap() = Some(sessions.clone());
+    }
+    *state.sessions.lock().unwrap() = sessions;
 }
 
 /// 抓取並把結果寫進共用狀態。失敗時保留上一次的快照，只記錄錯誤供面板顯示。
@@ -1199,6 +1210,80 @@ mod tests {
         );
 
         assert!(recent_play(&h.state, &snapshot, at("2026-09-21T08:00:00Z")).is_none());
+    }
+
+    /// 本期 09-01 → 10-01，總額 6000，剩餘由呼叫端給。
+    fn snapshot_with_remaining(remaining: u32, now: DateTime<Utc>) -> QuotaSnapshot {
+        let mut sub: crate::api::subscriptions::Subscription =
+            serde_json::from_str(FIXTURE).unwrap();
+        sub.total_time_in_minutes = 6000;
+        sub.remaining_time_in_minutes = remaining;
+        sub.current_span_start_date_time = Some(at("2026-09-01T00:00:00Z"));
+        sub.current_span_end_date_time = Some(at("2026-10-01T00:00:00Z"));
+        QuotaSnapshot::from_subscription(&sub, now)
+    }
+
+    /// 走勢圖最後一個實線的點，也就是它的錨點。
+    fn trend_anchor(state: &AppState) -> f64 {
+        state
+            .trend
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|point| point.used_minutes)
+            .expect("走勢圖應該有實線的點")
+    }
+
+    /// 這一輪 playtime 沒回，走勢圖仍然要用新快照的 U 重畫，不能留著舊圖。
+    /// 留舊圖的話圖的末端與進度條指到不同的位置，換期那一輪更是上個月的
+    /// 日期配這個月的數字。
+    #[tokio::test]
+    async fn the_trend_is_rebuilt_from_the_last_good_sessions_when_this_fetch_fails() {
+        let h = harness(true).await;
+        let now = at("2026-09-11T00:00:00Z");
+        let played = vec![play_session(
+            "2026-09-05T10:00:00Z",
+            "2026-09-05T20:00:00Z",
+            600.0,
+        )];
+
+        // 第一輪：逐場紀錄抓到了，U = 1500。
+        *h.state.snapshot.lock().unwrap() = Some(snapshot_with_remaining(4500, now));
+        *h.state.sessions.lock().unwrap() = Some(played.clone());
+        *h.state.last_good_sessions.lock().unwrap() = Some(played);
+        recompute_pace(&h.state, now);
+        assert_eq!(trend_anchor(&h.state), 1500.0);
+
+        // 第二輪：快照換新（又玩掉 300 分鐘），playtime 沒回。
+        *h.state.snapshot.lock().unwrap() = Some(snapshot_with_remaining(4200, now));
+        *h.state.sessions.lock().unwrap() = None;
+        recompute_pace(&h.state, now);
+        assert_eq!(trend_anchor(&h.state), 1800.0);
+    }
+
+    /// 登出要連逐場紀錄與走勢圖一起清。留著的話，下一個帳號第一次抓時
+    /// playtime 沒回，面板上就是前一個帳號的圖。
+    #[tokio::test]
+    async fn logging_out_clears_the_sessions_and_the_trend() {
+        let h = harness(true).await;
+        let now = at("2026-09-11T00:00:00Z");
+        let played = vec![play_session(
+            "2026-09-05T10:00:00Z",
+            "2026-09-05T20:00:00Z",
+            600.0,
+        )];
+        *h.state.snapshot.lock().unwrap() = Some(snapshot_with_remaining(4500, now));
+        *h.state.sessions.lock().unwrap() = Some(played.clone());
+        *h.state.last_good_sessions.lock().unwrap() = Some(played);
+        recompute_pace(&h.state, now);
+        assert!(!h.state.trend.lock().unwrap().is_empty());
+
+        reset_state(&h.state);
+
+        assert!(h.state.sessions.lock().unwrap().is_none());
+        assert!(h.state.last_good_sessions.lock().unwrap().is_none());
+        assert!(h.state.trend.lock().unwrap().is_empty());
     }
 
     /// 昨晚 23:00 玩到今天 01:00，只有後一小時算今天的。
