@@ -256,7 +256,7 @@ export default function ScheduleForm({
 
       {/* 五個選項排不進「左名稱右選項」那一行，所以名稱自己一行。 */}
       <div className="setting setting--stacked">
-        <span>自動更新</span>
+        <span>資料更新</span>
         <div className="setting__choice">
           {POLL_INTERVALS.map(([option, label]) => (
             <button
