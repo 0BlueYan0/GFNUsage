@@ -80,6 +80,9 @@ pub async fn obtain_token<R: Runtime>(
     let sender = Arc::new(Mutex::new(Some(tx)));
     let expected = state.clone();
 
+    if !silent {
+        show_in_dock(app, true);
+    }
     let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
         .title("登入 NVIDIA 帳號")
         .inner_size(480.0, 720.0)
@@ -98,7 +101,12 @@ pub async fn obtain_token<R: Runtime>(
             false
         })
         .build()
-        .map_err(|e| GfnError::LoginFailed(format!("開不了登入視窗：{e}")))?;
+        .map_err(|e| {
+            if !silent {
+                show_in_dock(app, false);
+            }
+            GfnError::LoginFailed(format!("開不了登入視窗：{e}"))
+        })?;
 
     // 使用者自己把視窗關掉也要收場，否則就卡滿 5 分鐘。
     //
@@ -123,6 +131,9 @@ pub async fn obtain_token<R: Runtime>(
         super::webview::await_outcome(&mut rx, &closed, &mut cancel, timeout, silent).await;
 
     let _ = window.close();
+    if !silent {
+        show_in_dock(app, false);
+    }
 
     let code = match outcome? {
         Redirect::Code(code) => code,
@@ -133,6 +144,27 @@ pub async fn obtain_token<R: Runtime>(
     };
 
     super::webview::exchange_code(http, auth_base, &code, &verifier, &nonce).await
+}
+
+/// 登入視窗開著的時候在 Dock 放一個圖示。
+///
+/// 平時是 Accessory（見 `main` 的 `setup`），Dock 與 Cmd+Tab 都沒有它。登入要
+/// 切到別的程式查密碼或收驗證碼，切回來時登入視窗在別的視窗後面，沒有 Dock
+/// 圖示就點不回來。靜默續期的視窗不顯示，不切。
+fn show_in_dock<R: Runtime>(app: &AppHandle<R>, show: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let policy = if show {
+            tauri::ActivationPolicy::Regular
+        } else {
+            tauri::ActivationPolicy::Accessory
+        };
+        if let Err(e) = app.set_activation_policy(policy) {
+            log::warn!("切換 Dock 圖示失敗：{e}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, show);
 }
 
 /// 這台機器的 device_id，沒有就生一顆。

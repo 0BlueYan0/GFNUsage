@@ -42,6 +42,12 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // 選單列程式不佔 Dock。`skipTaskbar` 只管 Windows 工作列，Dock 圖示要靠
+            // activation policy。Regular 的話要讓 Dock 圖示消失只能 Cmd+Q，選單列圖示
+            // 會跟著一起結束。登入視窗開著的時候例外，見 `auth::window::show_in_dock`。
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             let settings_dir = app
                 .path()
                 .app_config_dir()
