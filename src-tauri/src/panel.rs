@@ -233,7 +233,10 @@ pub fn toggle_from_click<R: Runtime>(app: &AppHandle<R>, position: PhysicalPosit
         return;
     };
     // macOS 點選單列圖示不會讓面板失焦，上面那段寬限期等不到，面板開著就要在
-    // 這裡收。Windows 點下去之前面板已經因為失焦收掉，走不到這裡。
+    // 這裡收。只限 macOS：Windows 點下去之前面板已經因為失焦收掉，走到這裡還
+    // 可見的面板是沒有焦點的那種（第二份程序叫出來時前景鎖擋下
+    // SetForegroundWindow），那一下要把它拉到前面，不是收起。這個情況沒實測。
+    #[cfg(target_os = "macos")]
     if window.is_visible().unwrap_or(false) {
         log::info!("面板：點擊，面板開著，收起");
         let _ = window.hide();
