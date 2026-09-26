@@ -1,3 +1,15 @@
+# [0.4.0](https://github.com/0BlueYan0/GFNUsage/compare/v0.3.0...v0.4.0) (2026-09-26)
+
+
+### 錯誤修正
+
+* **update:** macOS 把程式搬到唯讀位置執行時也裝得了更新 ([e0ced65](https://github.com/0BlueYan0/GFNUsage/commit/e0ced656562340f1e1558d72af9dd03580b92d52))
+
+
+### 新功能
+
+* **update:** 更新按鈕顯示下載進度 ([ce695d6](https://github.com/0BlueYan0/GFNUsage/commit/ce695d61f1c6d8aa5989e8ef58ffd7f7004f2dda))
+
 # [0.3.0](https://github.com/0BlueYan0/GFNUsage/compare/v0.2.0...v0.3.0) (2026-09-26)
 
 

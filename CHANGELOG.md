@@ -1,3 +1,15 @@
+# [0.4.0](https://github.com/0BlueYan0/GFNUsage/compare/v0.3.0...v0.4.0) (2026-09-26)
+
+
+### Bug Fixes
+
+* **update:** install updates on macOS when the app runs from a translocated copy ([e0ced65](https://github.com/0BlueYan0/GFNUsage/commit/e0ced656562340f1e1558d72af9dd03580b92d52))
+
+
+### Features
+
+* **update:** show download progress on the update button ([ce695d6](https://github.com/0BlueYan0/GFNUsage/commit/ce695d61f1c6d8aa5989e8ef58ffd7f7004f2dda))
+
 # [0.3.0](https://github.com/0BlueYan0/GFNUsage/compare/v0.2.0...v0.3.0) (2026-09-26)
 
 
