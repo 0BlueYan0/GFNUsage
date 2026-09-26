@@ -90,6 +90,28 @@ pub struct Style {
     pub bar_gap: i32,
 }
 
+/// macOS 選單列圖片的高度，實體像素。tray-icon 會把圖片縮成 18pt 高、寬度照比例
+/// （`platform_impl/macos/mod.rs`），畫成 36 就是 2x 螢幕上一個點對一個像素。
+///
+/// 放這裡而不是 `tray`，不加 cfg：`menubar_style_fits_the_menubar_height` 要在
+/// Windows 的 CI 上跑，而它守的就是這組數字。以前測試抄了一份字面值，改常數
+/// 測試照樣綠。
+pub const MENUBAR_H: i32 = 36;
+
+/// 畫選單列圖片時的 DPI，決定留白、進度條、間距。widget 的這些尺寸是照 96 DPI
+/// 定的，134 把整張圖縮進 `MENUBAR_H` 像素高。
+const MENUBAR_DPI: u32 = 134;
+
+/// 選單列圖片的字級，實體像素。照 `MENUBAR_DPI` 算是 20.9，比旁邊兩行字的
+/// 選單列項目小。2026-09-26 使用者要跟它們一樣大，22.7 看起來還是小，改 24.5。
+/// `PxScale` 是行高。間距照 `MENUBAR_DPI` 是 5，字加間距加進度條 34.5 像素，
+/// 進度條會畫到最底下那一行。間距改 4，是 33.5。
+/// 再加大的話 `menubar_style_fits_the_menubar_height` 會擋。
+const MENUBAR_TEXT_PX: f32 = 24.5;
+
+/// 字與進度條之間的間距，實體像素。理由見 `MENUBAR_TEXT_PX`。
+const MENUBAR_BAR_GAP: i32 = 4;
+
 impl Style {
     pub fn at(dpi: u32) -> Self {
         Style {
@@ -97,6 +119,15 @@ impl Style {
             pad_x: scale(PAD_X, dpi),
             bar_h: scale(BAR_H, dpi),
             bar_gap: scale(BAR_GAP, dpi),
+        }
+    }
+
+    /// macOS 選單列那組尺寸（`tray::apply_menubar`）。
+    pub fn menubar() -> Self {
+        Style {
+            text_px: MENUBAR_TEXT_PX,
+            bar_gap: MENUBAR_BAR_GAP,
+            ..Style::at(MENUBAR_DPI)
         }
     }
 }
@@ -427,16 +458,12 @@ mod tests {
         assert_eq!(color(Tone::Alert, true), color(Tone::Alert, false));
     }
 
-    /// macOS 選單列那組尺寸（`tray::apply_menubar`）：36 像素高放得下字加進度條，
-    /// 第一行與最後一行都沒有墨跡。改 `MENUBAR_TEXT_PX` 之前先改這裡的數字跑一次。
+    /// macOS 選單列那組尺寸（`tray::apply_menubar`）：`MENUBAR_H` 放得下字加進度條，
+    /// 第一行與最後一行都沒有墨跡。
     #[test]
     fn menubar_style_fits_the_menubar_height() {
-        let style = Style {
-            text_px: 24.5,
-            bar_gap: 4,
-            ..Style::at(134)
-        };
-        let (w, h) = (width_of(WIDEST, &style), 36);
+        let style = Style::menubar();
+        let (w, h) = (width_of(WIDEST, &style), MENUBAR_H);
         let buf = render_with(&sample(WIDEST, Some(0.5), false), w, h, &style, false);
         let row_ink = |y: i32| {
             (0..w)

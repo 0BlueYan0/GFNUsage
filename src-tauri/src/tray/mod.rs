@@ -23,8 +23,6 @@ pub struct TrayFace {
     /// 畫進圖示的文字（Windows 的系統匣只吃圖片）。
     pub label: String,
     pub color: [u8; 3],
-    /// 選單列文字（macOS）。`None` 代表只顯示圖示。
-    pub title: Option<String>,
     pub tooltip: String,
 }
 
@@ -50,7 +48,6 @@ pub fn face(
         return TrayFace {
             label: "!".into(),
             color: muted,
-            title: None,
             tooltip: format!("GeForce NOW：{}", error.unwrap_or("需要重新登入")),
         };
     }
@@ -59,7 +56,6 @@ pub fn face(
         return TrayFace {
             label: "\u{2013}".into(),
             color: muted,
-            title: None,
             tooltip: match error {
                 Some(e) => format!("GFNUsage：{e}"),
                 None => IDLE_TOOLTIP.into(),
@@ -96,11 +92,6 @@ pub fn face(
     }
 
     TrayFace {
-        title: Some(if snapshot.time_capped {
-            format!("{label}h")
-        } else {
-            label.clone()
-        }),
         label,
         color: if stale { icon::dimmed(base) } else { base },
         tooltip,
@@ -116,13 +107,12 @@ pub fn placeholder_image() -> Image<'static> {
     image("\u{2013}", icon::state_color(DisplayState::FreeTier))
 }
 
-/// 把算好的外觀畫上系統匣。
+/// 把算好的外觀畫上 Windows 的系統匣。macOS 走 `apply_menubar`。
 ///
-/// macOS 的選單列可以顯示文字，Windows 的系統匣只吃圖片 —— `set_title` 在
-/// Windows 上是無作用的，所以兩者都設，各自在自己的平台生效。
+/// 不設 title：Windows 的系統匣只吃圖片，`set_title` 在這裡無作用。`TrayFace`
+/// 以前帶一個給 macOS 選單列的 title，`apply_menubar` 接手之後沒有平台顯示它。
 pub fn apply_face<R: Runtime>(tray: &TrayIcon<R>, face: &TrayFace) {
     let _ = tray.set_icon(Some(image(&face.label, face.color)));
-    let _ = tray.set_title(face.title.as_deref());
     let _ = tray.set_tooltip(Some(&face.tooltip));
 }
 
@@ -168,32 +158,10 @@ pub fn sync<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
     apply_face(&tray, &tray_face);
 }
 
-/// 選單列圖片的高度，實體像素。tray-icon 會把圖片縮成 18pt 高、寬度照比例
-/// （`platform_impl/macos/mod.rs`），畫成 36 就是 2x 螢幕上一個點對一個像素。
-#[cfg(target_os = "macos")]
-const MENUBAR_H: i32 = 36;
-
-/// 畫選單列圖片時傳給 `widget::render` 的 DPI，決定留白、進度條、間距。
-/// widget 的這些尺寸是照 96 DPI 定的，134 把整張圖縮進 36 像素高。
-#[cfg(target_os = "macos")]
-const MENUBAR_DPI: u32 = 134;
-
-/// 選單列圖片的字級，實體像素。照 `MENUBAR_DPI` 算是 20.9，比旁邊兩行字的
-/// 選單列項目小。2026-09-26 使用者要跟它們一樣大，22.7 看起來還是小，改 24.5。
-/// `PxScale` 是行高。間距照 `MENUBAR_DPI` 是 5，字加間距加進度條 34.5 像素，
-/// 進度條會畫到最底下那一行。間距改 4，是 33.5。
-/// 要再加大的話先改 `render` 的 `menubar_style_fits_the_menubar_height`。
-#[cfg(target_os = "macos")]
-const MENUBAR_TEXT_PX: f32 = 24.5;
-
-/// 字與進度條之間的間距，實體像素。理由見 `MENUBAR_TEXT_PX`。
-#[cfg(target_os = "macos")]
-const MENUBAR_BAR_GAP: i32 = 4;
-
-/// macOS 選單列畫成工作列 widget 那張圖：時間加進度條。
+/// macOS 選單列畫成工作列 widget 那張圖：時間加進度條。尺寸在
+/// `widget::render::Style::menubar` 與 `MENUBAR_H`，跟守它們的測試同一個檔。
 ///
-/// 不用 `apply_face`：它畫的是 Windows 系統匣那種正方形數字圖示，再加上
-/// `set_title` 的文字，同一個數字在選單列上出現兩次。
+/// 不用 `apply_face`：它畫的是 Windows 系統匣那種正方形數字圖示。
 ///
 /// 正常狀態畫成 template 圖片，由系統上色。macOS 26 的選單列是透明的，字色
 /// 跟著桌布深淺變，程式自己判斷深淺色會不準。偏低、超前、用完、沒資料要看
@@ -208,14 +176,10 @@ fn apply_menubar<R: Runtime>(
     tooltip: &str,
 ) {
     use crate::widget::face::Tone;
-    use crate::widget::render::{render_rgba, width_of, Style, WIDEST};
+    use crate::widget::render::{render_rgba, width_of, Style, MENUBAR_H, WIDEST};
 
     let template = widget.tone == Tone::Normal;
-    let style = Style {
-        text_px: MENUBAR_TEXT_PX,
-        bar_gap: MENUBAR_BAR_GAP,
-        ..Style::at(MENUBAR_DPI)
-    };
+    let style = Style::menubar();
     // 有進度條時寬度固定成最寬的那串，理由同 `WIDEST`：數字變了旁邊的圖示
     // 不會跟著移動。沒有進度條時（沒資料、要重新登入）只有一個「–」或「!」，
     // 照最寬的留白的話兩邊是一大塊空的。
@@ -263,7 +227,6 @@ mod tests {
     fn idle_face_when_nothing_has_been_fetched() {
         let f = face(None, None, None, false, now(), stale());
         assert_eq!(f.label, "–");
-        assert_eq!(f.title, None);
         assert_eq!(f.tooltip, IDLE_TOOLTIP);
     }
 
@@ -271,7 +234,6 @@ mod tests {
     fn healthy_snapshot_shows_hours_in_the_state_color() {
         let f = face(Some(&snapshot(now())), None, None, false, now(), stale());
         assert_eq!(f.label, "103");
-        assert_eq!(f.title.as_deref(), Some("103h"));
         assert_eq!(f.color, icon::state_color(DisplayState::Normal));
         assert_eq!(f.tooltip, "GeForce NOW：剩餘 103 小時 / 115 小時");
     }
@@ -289,7 +251,6 @@ mod tests {
         );
         assert_eq!(f.label, "!");
         assert_eq!(f.color, icon::state_color(DisplayState::FreeTier));
-        assert_eq!(f.title, None);
         assert!(f.tooltip.contains("需要重新登入"), "{}", f.tooltip);
     }
 
