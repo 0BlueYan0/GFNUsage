@@ -158,9 +158,9 @@ jobs:
 
             ### macOS
 
-            Unsigned, unnotarised, and never run by anyone. Gatekeeper blocks
-            it on first launch — right-click the app and choose **Open**, or
-            allow it under **System Settings → Privacy & Security**.
+            Not notarised, and never run by anyone. macOS blocks it on first
+            launch: open **System Settings → Privacy & Security**, scroll
+            down, and click **Open Anyway** next to GFNUsage.
 
             ---
 
@@ -179,8 +179,9 @@ jobs:
 
             ### macOS
 
-            未簽章也未公證，而且沒有人跑過。Gatekeeper 第一次會擋下來——在
-            app 上按右鍵選**打開**，或到**系統設定 → 隱私權與安全性**放行。
+            沒有經過 Apple 公證，而且沒有人跑過。第一次打開會被擋下來，到
+            **系統設定 → 隱私權與安全性**，捲到下面，在 GFNUsage 旁邊按
+            **強制打開**。
 
             ---
 

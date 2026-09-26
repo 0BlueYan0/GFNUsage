@@ -67,9 +67,9 @@ The app checks for new versions and tells you when one is out. Nothing
 installs until you click it.
 
 **macOS is not guaranteed to work.** The `.dmg` is built by CI but nobody
-has run it. It is neither signed nor notarised, so Gatekeeper blocks it on
-first launch — right-click the app and choose **Open**, or allow it under
-**System Settings → Privacy & Security**.
+has run it. It is not notarised, so macOS blocks it on first launch. Open
+**System Settings → Privacy & Security**, scroll down, and click
+**Open Anyway** next to GFNUsage.
 
 Uninstalling leaves three things behind, by design, so a reinstall picks up
 where you left off: `%APPDATA%\tw.iosclub.gfnusage\`,
