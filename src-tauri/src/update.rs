@@ -3,6 +3,7 @@
 //! 這條路只打 GitHub 的 `latest.json`，不碰 NVIDIA，不進「同時有效 token
 //! 數量」那個上限的帳。查不到就等下一圈，不重試（spec §9）。
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -58,6 +59,57 @@ impl UpdateState {
     }
 }
 
+/// App Translocation 底下真正的 bundle 路徑。沒被搬就是 `None`。
+///
+/// 沒公證又帶著 `com.apple.quarantine` 的 app，macOS 會把它掛到
+/// `.../AppTranslocation/<UUID>/d/GFNUsage.app` 這個唯讀的 nullfs 上執行。
+/// updater 用 `current_exe()` 推要換掉的 bundle，推出來的是唯讀那一份，
+/// 安裝就回 `Read-only file system (os error 30)`。更新到 0.3.0 時在 Mac 上出過這個錯。
+///
+/// nullfs 的來源（`f_mntfromname`）就是原本那個 bundle，例如
+/// `/Applications/GFNUsage.app`。用 `statfs` 讀，不呼叫 Security.framework 的
+/// `SecTranslocateCreateOriginalPathForURL`：那支沒有公開的標頭檔。
+#[cfg(target_os = "macos")]
+pub fn original_bundle() -> Option<PathBuf> {
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+
+    let exe = std::env::current_exe().ok()?;
+    let c_path = CString::new(exe.as_os_str().as_bytes()).ok()?;
+    let mut fs = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `c_path` 是結尾有 NUL 的字串，`fs` 由 statfs 填滿。
+    if unsafe { libc::statfs(c_path.as_ptr(), fs.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: 回傳 0 代表 `fs` 已經填好。
+    let fs = unsafe { fs.assume_init() };
+    // SAFETY: 兩個欄位都是 NUL 結尾的固定長度陣列。
+    let fstype = unsafe { CStr::from_ptr(fs.f_fstypename.as_ptr()) };
+    let from = unsafe { CStr::from_ptr(fs.f_mntfromname.as_ptr()) };
+    translocated_source(&exe, &fstype.to_string_lossy(), &from.to_string_lossy())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn original_bundle() -> Option<PathBuf> {
+    None
+}
+
+/// `original_bundle` 能拆成純函式的那一半。
+///
+/// 三個條件都要：路徑在 `AppTranslocation` 底下、檔案系統是 nullfs、
+/// 來源是一個 `.app`。少一個就當沒被搬，照 updater 原本的路徑走。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn translocated_source(exe: &Path, fstype: &str, mount_from: &str) -> Option<PathBuf> {
+    let in_translocation = exe
+        .components()
+        .any(|c| c.as_os_str() == "AppTranslocation");
+    if !in_translocation || fstype != "nullfs" {
+        return None;
+    }
+    let source = PathBuf::from(mount_from);
+    (source.extension()? == "app").then_some(source)
+}
+
 /// 一次檢查的結果。
 ///
 /// 三種都要傳得回前端。只記日誌的話「已是最新」和「端點壞掉」在畫面上
@@ -84,6 +136,16 @@ async fn check_with<R: Runtime>(
     direct: bool,
 ) -> Result<Option<Update>, String> {
     let mut builder = app.updater_builder().timeout(REQUEST_TIMEOUT);
+    if let Some(bundle) = original_bundle() {
+        // updater 從執行檔往上找 `.app`，所以給它原 bundle 裡同名的那個執行檔。
+        if let Some(name) = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.file_name().map(Into::into))
+        {
+            let exe: PathBuf = bundle.join("Contents").join("MacOS").join::<PathBuf>(name);
+            builder = builder.executable_path(exe);
+        }
+    }
     if direct {
         builder = builder.no_proxy();
     }
@@ -166,6 +228,14 @@ pub async fn install<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 
     let version = pending.version.clone();
     log::info!("開始安裝 {version}");
+    let bundle = original_bundle();
+    if let Some(bundle) = &bundle {
+        log::info!(
+            "程式在 AppTranslocation 裡執行，改寫回 {}",
+            bundle.display()
+        );
+    }
+
     match pending.download_and_install(|_, _| {}, || {}).await {
         Ok(()) => {
             // Windows 到不了這裡。macOS 會：換好的是磁碟上的 bundle，記憶體裡
@@ -174,6 +244,22 @@ pub async fn install<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
             // 直接 return，按下去沒反應。
             state.installing.store(false, Ordering::SeqCst);
             log::info!("{version} 安裝完成，重新啟動");
+            if let Some(bundle) = bundle {
+                // `app.restart()` 開的是 `current_exe()`，也就是唯讀掛載點上
+                // 那一份，而它的來源剛剛被換掉了。改開原本的路徑。新的 bundle
+                // 是這支程式自己下載的，沒有隔離屬性，這次不會再被搬。
+                match std::process::Command::new("open")
+                    .arg("-n")
+                    .arg(&bundle)
+                    .spawn()
+                {
+                    Ok(_) => {
+                        app.cleanup_before_exit();
+                        std::process::exit(0);
+                    }
+                    Err(e) => log::warn!("重新啟動失敗：{e}"),
+                }
+            }
             app.restart();
         }
         Err(e) => {
@@ -219,6 +305,34 @@ mod tests {
 
         assert_eq!(state.available(), None);
         assert!(!state.installing());
+    }
+
+    #[test]
+    fn a_translocated_app_resolves_to_its_source() {
+        let exe = Path::new(
+            "/private/var/folders/_6/x/T/AppTranslocation/7D30742B/d/GFNUsage.app/Contents/MacOS/gfnusage",
+        );
+
+        assert_eq!(
+            translocated_source(exe, "nullfs", "/Applications/GFNUsage.app"),
+            Some(PathBuf::from("/Applications/GFNUsage.app"))
+        );
+    }
+
+    #[test]
+    fn an_app_run_in_place_is_not_translocated() {
+        let exe = Path::new("/Applications/GFNUsage.app/Contents/MacOS/gfnusage");
+
+        assert_eq!(translocated_source(exe, "apfs", "/dev/disk3s5"), None);
+    }
+
+    #[test]
+    fn translocation_needs_nullfs_and_an_app_source() {
+        let exe =
+            Path::new("/private/var/T/AppTranslocation/X/d/GFNUsage.app/Contents/MacOS/gfnusage");
+
+        assert_eq!(translocated_source(exe, "apfs", "/dev/disk3s5"), None);
+        assert_eq!(translocated_source(exe, "nullfs", "/Applications"), None);
     }
 
     #[test]

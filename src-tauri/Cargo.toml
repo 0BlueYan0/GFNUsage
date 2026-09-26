@@ -41,6 +41,11 @@ tauri-plugin-updater = "2"
 tauri-plugin-autostart = "2"
 log = "0.4"
 
+# 更新時讀 App Translocation 掛載點的來源（`update::original_bundle`）。
+# 版本跟著 lock 裡已經有的那份走。
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 # GFN 客戶端的視窗偵測（`watcher::win32`）與工作列 widget（`widget/`）。
 # 用 windows-sys 不用 windows：兩邊都只是 Win32 的 FFI 函式，沒有 COM，
 # 也不會把 MSRV 頂到 rust-version 之上。
