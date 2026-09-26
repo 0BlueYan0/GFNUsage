@@ -163,9 +163,10 @@ pub fn sync<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
 ///
 /// 不用 `apply_face`：它畫的是 Windows 系統匣那種正方形數字圖示。
 ///
-/// 正常狀態畫成 template 圖片，由系統上色。macOS 26 的選單列是透明的，字色
-/// 跟著桌布深淺變，程式自己判斷深淺色會不準。偏低、超前、用完、沒資料要看
-/// 得出顏色，畫成彩色圖片。
+/// 正常與沒資料畫成 template 圖片，由系統上色。macOS 26 的選單列是透明的，字色
+/// 跟著桌布深淺變，程式自己判斷深淺色會不準。沒資料那組灰是照 Windows 深色
+/// 工作列挑的，淺色選單列上對比不到 2:1。偏低、超前、用完要看得出顏色，畫成
+/// 彩色圖片。
 ///
 /// title 設成空字串而不是 `None`：tray-icon 0.24 在 macOS 上收到 `None` 不動
 /// 按鈕，上一次的文字會留著。
@@ -178,7 +179,7 @@ fn apply_menubar<R: Runtime>(
     use crate::widget::face::Tone;
     use crate::widget::render::{render_rgba, width_of, Style, MENUBAR_H, WIDEST};
 
-    let template = widget.tone == Tone::Normal;
+    let template = matches!(widget.tone, Tone::Normal | Tone::Muted);
     let style = Style::menubar();
     // 有進度條時寬度固定成最寬的那串，理由同 `WIDEST`：數字變了旁邊的圖示
     // 不會跟著移動。沒有進度條時（沒資料、要重新登入）只有一個「–」或「!」，
