@@ -1,3 +1,22 @@
+# [0.3.0](https://github.com/0BlueYan0/GFNUsage/compare/v0.2.0...v0.3.0) (2026-09-26)
+
+
+### 錯誤修正
+
+* **app:** macOS 啟動時 Dock 圖示不再出現 ([42f3908](https://github.com/0BlueYan0/GFNUsage/commit/42f3908a49b19c62d831aafc32706083882fda14))
+* **app:** macOS 下載後打得開 ([680799a](https://github.com/0BlueYan0/GFNUsage/commit/680799ad9686c559d92e8eef761280853a8d4f88))
+* **panel:** Windows 上再點一次系統匣是把面板拉到前面，不是收起 ([17084a2](https://github.com/0BlueYan0/GFNUsage/commit/17084a2a00e0d4dc5f8416be2ed68f39f19d9540))
+* **panel:** macOS 面板開在選單列圖示所在的那台螢幕 ([3e26805](https://github.com/0BlueYan0/GFNUsage/commit/3e268058b4f82faedb16809981e964ede5d87c2b))
+* **panel:** macOS 第一次啟動的面板也開在選單列圖示下方 ([a58c5bb](https://github.com/0BlueYan0/GFNUsage/commit/a58c5bb9a360942093b1d4e5d82fc3c8f0a86565))
+* **panel:** macOS 面板開在選單列圖示下方，再點一次收起 ([4d4882a](https://github.com/0BlueYan0/GFNUsage/commit/4d4882a7e149df18c6524ceab88068e5bac62383))
+* **tray:** 沒有資料時，淺色選單列上的項目看得清楚 ([d84578d](https://github.com/0BlueYan0/GFNUsage/commit/d84578dda9c30a2dfb7476a582ae3a17fdf6b0bd))
+
+
+### 新功能
+
+* **app:** macOS 不佔 Dock，登入時例外 ([96dd1e5](https://github.com/0BlueYan0/GFNUsage/commit/96dd1e5a560f4c4e06fccec342374a7986ef9b8f))
+* **tray:** macOS 選單列顯示剩餘時間與進度條 ([4eb3c0d](https://github.com/0BlueYan0/GFNUsage/commit/4eb3c0d7b2d5119825fc52c77de504ea2e07c565))
+
 # [0.2.0](https://github.com/0BlueYan0/GFNUsage/compare/v0.1.3...v0.2.0) (2026-09-23)
 
 

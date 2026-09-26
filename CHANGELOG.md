@@ -1,3 +1,22 @@
+# [0.3.0](https://github.com/0BlueYan0/GFNUsage/compare/v0.2.0...v0.3.0) (2026-09-26)
+
+
+### Bug Fixes
+
+* **app:** keep the Dock icon from appearing at launch on macOS ([42f3908](https://github.com/0BlueYan0/GFNUsage/commit/42f3908a49b19c62d831aafc32706083882fda14))
+* **app:** let macOS open the app after it is downloaded ([680799a](https://github.com/0BlueYan0/GFNUsage/commit/680799ad9686c559d92e8eef761280853a8d4f88))
+* **panel:** a second tray click on Windows brings the panel to the front instead of hiding it ([17084a2](https://github.com/0BlueYan0/GFNUsage/commit/17084a2a00e0d4dc5f8416be2ed68f39f19d9540))
+* **panel:** open the panel on the screen that holds the menu bar icon on macOS ([3e26805](https://github.com/0BlueYan0/GFNUsage/commit/3e268058b4f82faedb16809981e964ede5d87c2b))
+* **panel:** open the panel under the menu bar icon on first launch on macOS ([a58c5bb](https://github.com/0BlueYan0/GFNUsage/commit/a58c5bb9a360942093b1d4e5d82fc3c8f0a86565))
+* **panel:** open the panel under the menu bar icon on macOS and close it with a second click ([4d4882a](https://github.com/0BlueYan0/GFNUsage/commit/4d4882a7e149df18c6524ceab88068e5bac62383))
+* **tray:** keep the menu bar item readable on a light menu bar when there is no data ([d84578d](https://github.com/0BlueYan0/GFNUsage/commit/d84578dda9c30a2dfb7476a582ae3a17fdf6b0bd))
+
+
+### Features
+
+* **app:** keep the macOS app out of the Dock except while signing in ([96dd1e5](https://github.com/0BlueYan0/GFNUsage/commit/96dd1e5a560f4c4e06fccec342374a7986ef9b8f))
+* **tray:** show the time left and a progress bar in the macOS menu bar ([4eb3c0d](https://github.com/0BlueYan0/GFNUsage/commit/4eb3c0d7b2d5119825fc52c77de504ea2e07c565))
+
 # [0.2.0](https://github.com/0BlueYan0/GFNUsage/compare/v0.1.3...v0.2.0) (2026-09-23)
 
 
