@@ -11,9 +11,9 @@ system tray or the macOS menu bar.
 > overrun projection, your per-session play history and the blackout
 > windows you set up in the panel.
 >
-> **macOS is untested.** The sign-in flow exists precisely so a Mac can
-> get its own session, but the development machine is a Windows box and
-> nobody has run it on a Mac yet.
+> **macOS has been run on one Mac.** The sign-in flow exists precisely so
+> a Mac can get its own session, but the development machine is a Windows
+> box. Sign-in, the menu bar item and the panel have been tried on one Mac.
 
 ## Why
 
@@ -66,8 +66,8 @@ unknown publisher: choose **More info** → **Run anyway**.
 The app checks for new versions and tells you when one is out. Nothing
 installs until you click it.
 
-**macOS is not guaranteed to work.** The `.dmg` is built by CI but nobody
-has run it. It is not notarised, so macOS blocks it on first launch. Open
+**macOS has been tried on one Mac.** The `.dmg` is not notarised, so
+macOS blocks it on first launch. Open
 **System Settings → Privacy & Security**, scroll down, and click
 **Open Anyway** next to GFNUsage.
 

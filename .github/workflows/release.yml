@@ -158,7 +158,7 @@ jobs:
 
             ### macOS
 
-            Not notarised, and never run by anyone. macOS blocks it on first
+            Not notarised, and tried on one Mac so far. macOS blocks it on first
             launch: open **System Settings → Privacy & Security**, scroll
             down, and click **Open Anyway** next to GFNUsage.
 
@@ -179,7 +179,7 @@ jobs:
 
             ### macOS
 
-            沒有經過 Apple 公證，而且沒有人跑過。第一次打開會被擋下來，到
+            沒有經過 Apple 公證，到目前只在一台 Mac 上試過。第一次打開會被擋下來，到
             **系統設定 → 隱私權與安全性**，捲到下面，在 GFNUsage 旁邊按
             **強制打開**。
 
