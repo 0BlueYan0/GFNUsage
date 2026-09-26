@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  打包時 Tauri 會把這份併進 app 的 Info.plist。
+
+  LSUIElement：程序一起來就不在 Dock 與 Cmd+Tab。`main.rs` 的
+  set_activation_policy(Accessory) 要等 applicationDidFinishLaunching 才真的
+  生效，沒有這個鍵的話每次啟動 Dock 圖示先出現再消失。登入視窗開著時
+  `auth::window::show_in_dock` 切回 Regular 不受它影響。
+-->
+<plist version="1.0">
+<dict>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>

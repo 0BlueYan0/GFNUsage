@@ -45,6 +45,11 @@ fn main() {
             // 選單列程式不佔 Dock。`skipTaskbar` 只管 Windows 工作列，Dock 圖示要靠
             // activation policy。Regular 的話要讓 Dock 圖示消失只能 Cmd+Q，選單列圖示
             // 會跟著一起結束。登入視窗開著的時候例外，見 `auth::window::show_in_dock`。
+            //
+            // 打包後的 app 由 `src-tauri/Info.plist` 的 `LSUIElement` 決定，程序一起來
+            // 就不在 Dock。這一行是給 `tauri dev` 的：沒有 bundle 就沒有 plist，而 tao
+            // 要到 applicationDidFinishLaunching 才真的呼叫 setActivationPolicy，在那
+            // 之前是 Regular，Dock 圖示先出現再消失。
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
