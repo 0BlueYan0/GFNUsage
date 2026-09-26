@@ -64,7 +64,11 @@ pub fn position<R: Runtime>(window: &WebviewWindow<R>, near: PhysicalPosition<f6
     let (aw, ah) = (area.size.width as i32, area.size.height as i32);
     let (ww, wh) = (size.width as i32, size.height as i32);
 
-    let x = if (near.x as i32) > ax + aw / 2 {
+    // macOS 的選單列圖示擠在同一條上，貼角落的話面板離圖示可能隔了半個螢幕
+    // （2026-09-26 回報）。水平置中在圖示下方，超出去的由下面的 clamp 推回來。
+    let x = if cfg!(target_os = "macos") {
+        (near.x as i32 - ww / 2).min(ax + aw - ww - PANEL_MARGIN)
+    } else if (near.x as i32) > ax + aw / 2 {
         ax + aw - ww - PANEL_MARGIN
     } else {
         ax + PANEL_MARGIN
@@ -101,17 +105,47 @@ pub fn show_default<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = app.get_webview_window(PANEL_LABEL) else {
         return;
     };
+    // macOS 的選單列在上面，右下角是錯的角（2026-09-26 登入完成後面板開在
+    // 螢幕底下）。直接問選單列圖示在哪裡，跟點圖示叫出來的位置一樣。
+    // Windows 不走這條：圖示收在溢位區時量到的是溢位區的位置。
+    #[cfg(target_os = "macos")]
+    if let Some(near) = tray_center(app, &window) {
+        show(&window, near);
+        return;
+    }
     let near = match window.primary_monitor() {
         Ok(Some(monitor)) => {
             let area = monitor.work_area();
+            // 查不到圖示時退回右上角，理由同上。
+            let y = if cfg!(target_os = "macos") {
+                area.position.y
+            } else {
+                area.position.y + area.size.height as i32
+            };
             PhysicalPosition::new(
                 f64::from(area.position.x + area.size.width as i32),
-                f64::from(area.position.y + area.size.height as i32),
+                f64::from(y),
             )
         }
         _ => PhysicalPosition::new(0.0, 0.0),
     };
     show(&window, near);
+}
+
+/// 選單列圖示的中心點，實體像素。
+#[cfg(target_os = "macos")]
+fn tray_center<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &WebviewWindow<R>,
+) -> Option<PhysicalPosition<f64>> {
+    let rect = app.tray_by_id(crate::tray::TRAY_ID)?.rect().ok()??;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let at: PhysicalPosition<f64> = rect.position.to_physical(scale);
+    let size: tauri::PhysicalSize<f64> = rect.size.to_physical(scale);
+    Some(PhysicalPosition::new(
+        at.x + size.width / 2.0,
+        at.y + size.height / 2.0,
+    ))
 }
 
 /// 點了系統匣圖示或工作列 widget。面板剛因為這一下失焦收起的話，這一下是關閉。
@@ -131,9 +165,17 @@ pub fn toggle_from_click<R: Runtime>(app: &AppHandle<R>, position: PhysicalPosit
     if just_closed {
         return;
     }
-    if let Some(window) = app.get_webview_window(PANEL_LABEL) {
-        show(&window, position);
+    let Some(window) = app.get_webview_window(PANEL_LABEL) else {
+        return;
+    };
+    // macOS 點選單列圖示不會讓面板失焦，上面那段寬限期等不到，面板開著就要在
+    // 這裡收。Windows 點下去之前面板已經因為失焦收掉，走不到這裡。
+    if window.is_visible().unwrap_or(false) {
+        log::info!("面板：點擊，面板開著，收起");
+        let _ = window.hide();
+        return;
     }
+    show(&window, position);
 }
 
 /// 在 `at`（螢幕座標）叫出系統匣那一份選單。
