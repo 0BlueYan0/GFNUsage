@@ -167,6 +167,9 @@ fn main() {
                     panel::toggle_from_click(tray.app_handle(), position);
                 })
                 .build(app)?;
+            // 上面的 placeholder 是 Windows 系統匣的正方形圖示。macOS 選單列畫的是
+            // 另一種（`tray::apply_menubar`），不重畫的話第一輪輪詢回來之前是那一個。
+            tray::sync(app.handle(), &state);
 
             // id_token 的來源：帳號頁那顆 client_id 的靜默授權。
             //

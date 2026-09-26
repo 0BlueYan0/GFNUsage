@@ -143,17 +143,97 @@ pub fn sync<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
     let error = state.display_error();
     let needs_login = state.needs_login.load(Ordering::SeqCst);
     let stale_after = ui.poll_interval.stale_after();
-    apply_face(
-        &tray,
-        &face(
+    let now = Utc::now();
+    let tray_face = face(
+        snapshot.as_ref(),
+        pace.as_ref(),
+        error.as_deref(),
+        needs_login,
+        now,
+        stale_after,
+    );
+    #[cfg(target_os = "macos")]
+    {
+        let widget = crate::widget::face::face(
             snapshot.as_ref(),
             pace.as_ref(),
-            error.as_deref(),
             needs_login,
-            Utc::now(),
+            ui.metric,
+            now,
             stale_after,
-        ),
+        );
+        apply_menubar(&tray, &widget, &tray_face.tooltip);
+    }
+    #[cfg(not(target_os = "macos"))]
+    apply_face(&tray, &tray_face);
+}
+
+/// 選單列圖片的高度，實體像素。tray-icon 會把圖片縮成 18pt 高、寬度照比例
+/// （`platform_impl/macos/mod.rs`），畫成 36 就是 2x 螢幕上一個點對一個像素。
+#[cfg(target_os = "macos")]
+const MENUBAR_H: i32 = 36;
+
+/// 畫選單列圖片時傳給 `widget::render` 的 DPI，決定留白、進度條、間距。
+/// widget 的這些尺寸是照 96 DPI 定的，134 把整張圖縮進 36 像素高。
+#[cfg(target_os = "macos")]
+const MENUBAR_DPI: u32 = 134;
+
+/// 選單列圖片的字級，實體像素。照 `MENUBAR_DPI` 算是 20.9，比旁邊兩行字的
+/// 選單列項目小。2026-09-26 使用者要跟它們一樣大，22.7 看起來還是小，改 24.5。
+/// `PxScale` 是行高。間距照 `MENUBAR_DPI` 是 5，字加間距加進度條 34.5 像素，
+/// 進度條會畫到最底下那一行。間距改 4，是 33.5。
+/// 要再加大的話先改 `render` 的 `menubar_style_fits_the_menubar_height`。
+#[cfg(target_os = "macos")]
+const MENUBAR_TEXT_PX: f32 = 24.5;
+
+/// 字與進度條之間的間距，實體像素。理由見 `MENUBAR_TEXT_PX`。
+#[cfg(target_os = "macos")]
+const MENUBAR_BAR_GAP: i32 = 4;
+
+/// macOS 選單列畫成工作列 widget 那張圖：時間加進度條。
+///
+/// 不用 `apply_face`：它畫的是 Windows 系統匣那種正方形數字圖示，再加上
+/// `set_title` 的文字，同一個數字在選單列上出現兩次。
+///
+/// 正常狀態畫成 template 圖片，由系統上色。macOS 26 的選單列是透明的，字色
+/// 跟著桌布深淺變，程式自己判斷深淺色會不準。偏低、超前、用完、沒資料要看
+/// 得出顏色，畫成彩色圖片。
+///
+/// title 設成空字串而不是 `None`：tray-icon 0.24 在 macOS 上收到 `None` 不動
+/// 按鈕，上一次的文字會留著。
+#[cfg(target_os = "macos")]
+fn apply_menubar<R: Runtime>(
+    tray: &TrayIcon<R>,
+    widget: &crate::widget::face::WidgetFace,
+    tooltip: &str,
+) {
+    use crate::widget::face::Tone;
+    use crate::widget::render::{render_rgba, width_of, Style, WIDEST};
+
+    let template = widget.tone == Tone::Normal;
+    let style = Style {
+        text_px: MENUBAR_TEXT_PX,
+        bar_gap: MENUBAR_BAR_GAP,
+        ..Style::at(MENUBAR_DPI)
+    };
+    // 有進度條時寬度固定成最寬的那串，理由同 `WIDEST`：數字變了旁邊的圖示
+    // 不會跟著移動。沒有進度條時（沒資料、要重新登入）只有一個「–」或「!」，
+    // 照最寬的留白的話兩邊是一大塊空的。
+    let w = if widget.fill.is_some() {
+        width_of(WIDEST, &style)
+    } else {
+        width_of(&widget.text, &style)
+    };
+    let rgba = render_rgba(widget, w, MENUBAR_H, &style, true);
+    // 圖片與 template 一次設。tray-icon 0.24 的 `set_icon` 在 macOS 上把 template
+    // 寫死成 false，分兩步設的話中間有一格畫面是黑字，面板打開後重畫的那一下
+    // 看起來是閃一次（2026-09-26 錄影看到的）。
+    let _ = tray.set_icon_with_as_template(
+        Some(Image::new_owned(rgba, w as u32, MENUBAR_H as u32)),
+        template,
     );
+    let _ = tray.set_title(Some(""));
+    let _ = tray.set_tooltip(Some(tooltip));
 }
 
 #[cfg(test)]

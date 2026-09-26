@@ -78,6 +78,29 @@ fn text_px(dpi: u32) -> f32 {
     TEXT_PX * dpi as f32 / 96.0
 }
 
+/// 畫的時候用的尺寸，實體像素。
+///
+/// 工作列照 DPI 等比例縮放，用 `Style::at`。macOS 選單列的圖片高度被固定成
+/// 18pt，字要跟旁邊的選單列文字一樣大，只能單獨放大字，所以字級另外給。
+#[derive(Debug, Clone, Copy)]
+pub struct Style {
+    pub text_px: f32,
+    pub pad_x: i32,
+    pub bar_h: i32,
+    pub bar_gap: i32,
+}
+
+impl Style {
+    pub fn at(dpi: u32) -> Self {
+        Style {
+            text_px: text_px(dpi),
+            pad_x: scale(PAD_X, dpi),
+            bar_h: scale(BAR_H, dpi),
+            bar_gap: scale(BAR_GAP, dpi),
+        }
+    }
+}
+
 /// 文字的前進寬度，實體像素。
 fn measure(fonts: &Fonts, text: &str, px: f32) -> f32 {
     text.chars()
@@ -87,8 +110,13 @@ fn measure(fonts: &Fonts, text: &str, px: f32) -> f32 {
 
 /// widget 的寬度，實體像素。
 pub fn width_for(dpi: u32) -> i32 {
+    width_of(WIDEST, &Style::at(dpi))
+}
+
+/// `text` 加上左右留白的寬度，實體像素。
+pub fn width_of(text: &str, style: &Style) -> i32 {
     let fonts = fonts();
-    measure(&fonts, WIDEST, text_px(dpi)).ceil() as i32 + 2 * scale(PAD_X, dpi)
+    measure(&fonts, text, style.text_px).ceil() as i32 + 2 * style.pad_x
 }
 
 /// 預乘 alpha 的 over。`a` 是 0–1 的覆蓋率乘上不透明度。
@@ -153,19 +181,23 @@ fn capsule(
 }
 
 pub fn render(face: &WidgetFace, w: i32, h: i32, dpi: u32, light: bool) -> Vec<u8> {
+    render_with(face, w, h, &Style::at(dpi), light)
+}
+
+pub fn render_with(face: &WidgetFace, w: i32, h: i32, style: &Style, light: bool) -> Vec<u8> {
     if w <= 0 || h <= 0 {
         return Vec::new();
     }
     let mut buf = [0, 0, 0, HIT_ALPHA].repeat((w * h) as usize);
     let fonts = fonts();
-    let px = text_px(dpi);
+    let px = style.text_px;
     let opacity = if face.stale { STALE_ALPHA } else { 1.0 };
     let rgb = color(face.tone, light);
 
     let latin = fonts.latin.as_scaled(PxScale::from(px));
     let line = latin.ascent() - latin.descent();
-    let bar_h = scale(BAR_H, dpi) as f32;
-    let gap = scale(BAR_GAP, dpi) as f32;
+    let bar_h = style.bar_h as f32;
+    let gap = style.bar_gap as f32;
     // 沒有進度條時字單獨置中，不留一塊空的位置給它。
     let content = if face.fill.is_some() {
         line + gap + bar_h
@@ -195,8 +227,8 @@ pub fn render(face: &WidgetFace, w: i32, h: i32, dpi: u32, light: bool) -> Vec<u
     }
 
     if let Some(fill) = face.fill {
-        let x0 = scale(PAD_X, dpi) as f32;
-        let x1 = (w - scale(PAD_X, dpi)) as f32;
+        let x0 = style.pad_x as f32;
+        let x1 = (w - style.pad_x) as f32;
         let bar_top = top + line + gap;
         capsule(
             &mut buf,
@@ -213,6 +245,27 @@ pub fn render(face: &WidgetFace, w: i32, h: i32, dpi: u32, light: bool) -> Vec<u
         capsule(&mut buf, w, h, x0, end, bar_top, bar_h, rgb, opacity);
     }
 
+    buf
+}
+
+/// 同一張圖，換成 Tauri `Image` 要的 RGBA、不預乘。macOS 選單列用。
+///
+/// 背景的 `HIT_ALPHA` 歸零：選單列項目整塊都點得到，不需要它，留著的話
+/// template 圖片的背景會被系統上色成一層看得出來的底。
+pub fn render_rgba(face: &WidgetFace, w: i32, h: i32, style: &Style, light: bool) -> Vec<u8> {
+    let mut buf = render_with(face, w, h, style, light);
+    for px in buf.chunks_exact_mut(4) {
+        let a = px[3];
+        if a <= HIT_ALPHA {
+            px.copy_from_slice(&[0, 0, 0, 0]);
+            continue;
+        }
+        let un = |c: u8| ((c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
+        let (b, g, r) = (px[0], px[1], px[2]);
+        px[0] = un(r);
+        px[1] = un(g);
+        px[2] = un(b);
+    }
     buf
 }
 
@@ -372,6 +425,26 @@ mod tests {
         );
         // 其他色調兩種工作列都看得到，不分深淺。
         assert_eq!(color(Tone::Alert, true), color(Tone::Alert, false));
+    }
+
+    /// macOS 選單列那組尺寸（`tray::apply_menubar`）：36 像素高放得下字加進度條，
+    /// 第一行與最後一行都沒有墨跡。改 `MENUBAR_TEXT_PX` 之前先改這裡的數字跑一次。
+    #[test]
+    fn menubar_style_fits_the_menubar_height() {
+        let style = Style {
+            text_px: 24.5,
+            bar_gap: 4,
+            ..Style::at(134)
+        };
+        let (w, h) = (width_of(WIDEST, &style), 36);
+        let buf = render_with(&sample(WIDEST, Some(0.5), false), w, h, &style, false);
+        let row_ink = |y: i32| {
+            (0..w)
+                .filter(|x| buf[((y * w + x) * 4 + 3) as usize] > HIT_ALPHA)
+                .count()
+        };
+        assert_eq!(row_ink(0), 0, "頂端被切到");
+        assert_eq!(row_ink(h - 1), 0, "底端被切到");
     }
 
     #[test]
