@@ -47,12 +47,8 @@ const PANEL_MARGIN: i32 = 12;
 /// 緊鄰工作列，所以離點擊處最近的角落一定就是正確的那個角落。可用區
 /// （work area）已經排除工作列本身，面板不會被壓在它底下。
 pub fn position<R: Runtime>(window: &WebviewWindow<R>, near: PhysicalPosition<f64>) {
-    let monitor = match window.app_handle().monitor_from_point(near.x, near.y) {
-        Ok(Some(monitor)) => monitor,
-        _ => match window.primary_monitor() {
-            Ok(Some(monitor)) => monitor,
-            _ => return,
-        },
+    let Some(monitor) = monitor_at(window, near) else {
+        return;
     };
 
     let area = monitor.work_area();
@@ -60,9 +56,23 @@ pub fn position<R: Runtime>(window: &WebviewWindow<R>, near: PhysicalPosition<f6
         return;
     };
 
+    // macOS 的實體像素是每台螢幕各乘自己的倍率（tao 的 `position()`／`size()`，
+    // tauri-runtime-wry 的 `work_area()` 也是）。`near` 與 `area` 都是圖示那台的
+    // （見 `monitor_at`），面板的 `outer_size` 乘的是面板現在那台的倍率，兩台倍率
+    // 不同時先換成圖示那台的。Windows 的實體像素全螢幕同一套，兩個倍率都當 1。
+    let (k, kw) = if cfg!(target_os = "macos") {
+        let k = monitor.scale_factor();
+        (k, window.scale_factor().unwrap_or(k))
+    } else {
+        (1.0, 1.0)
+    };
+
     let (ax, ay) = (area.position.x, area.position.y);
     let (aw, ah) = (area.size.width as i32, area.size.height as i32);
-    let (ww, wh) = (size.width as i32, size.height as i32);
+    let (ww, wh) = (
+        (f64::from(size.width) * k / kw) as i32,
+        (f64::from(size.height) * k / kw) as i32,
+    );
 
     // macOS 的選單列圖示擠在同一條上，貼角落的話面板離圖示可能隔了半個螢幕
     // （2026-09-26 回報）。水平置中在圖示下方，超出去的由下面的 clamp 推回來。
@@ -83,7 +93,58 @@ pub fn position<R: Runtime>(window: &WebviewWindow<R>, near: PhysicalPosition<f6
     let x = x.clamp(ax, (ax + aw - ww).max(ax));
     let y = y.clamp(ay, (ay + ah - wh).max(ay));
 
-    let _ = window.set_position(PhysicalPosition::new(x, y));
+    if cfg!(target_os = "macos") {
+        // 用點設位置。tao 收到實體像素時是用面板現在那台的倍率換成點，面板要搬去
+        // 倍率不同的另一台時會差一倍。
+        let _ = window.set_position(tauri::LogicalPosition::new(
+            f64::from(x) / k,
+            f64::from(y) / k,
+        ));
+    } else {
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
+}
+
+/// `near` 落在哪台螢幕上，查不到就主螢幕。
+///
+/// macOS 不用 `monitor_from_point`：tao 拿 `CGDisplayBounds` 比對，那是點，餵實體
+/// 像素的話 2x 螢幕上永遠比對不到，接了一台 1x 外接螢幕會比對到它。改比對 tao 的
+/// `position()`／`size()`，它們是每台各乘自己的倍率，tray-icon 給的座標乘的是圖示
+/// 那台的倍率，所以圖示那台一定包含 `near`。倍率不同的另一台也可能包含，兩台都
+/// 中時取主螢幕：選單列的圖示在那台上。多螢幕沒有實機驗過。
+fn monitor_at<R: Runtime>(
+    window: &WebviewWindow<R>,
+    near: PhysicalPosition<f64>,
+) -> Option<tauri::Monitor> {
+    let primary = window.primary_monitor().ok().flatten();
+    let found = if cfg!(target_os = "macos") {
+        let (x, y) = (near.x as i32, near.y as i32);
+        let contains = |m: &tauri::Monitor| {
+            let (p, s) = (m.position(), m.size());
+            (p.x..p.x + s.width as i32).contains(&x) && (p.y..p.y + s.height as i32).contains(&y)
+        };
+        let hits: Vec<tauri::Monitor> = window
+            .available_monitors()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(contains)
+            .collect();
+        hits.iter()
+            .find(|m| {
+                primary
+                    .as_ref()
+                    .is_some_and(|p| p.position() == m.position())
+            })
+            .or(hits.first())
+            .cloned()
+    } else {
+        window
+            .app_handle()
+            .monitor_from_point(near.x, near.y)
+            .ok()
+            .flatten()
+    };
+    found.or(primary)
 }
 
 pub fn show<R: Runtime>(window: &WebviewWindow<R>, near: PhysicalPosition<f64>) {
@@ -109,7 +170,7 @@ pub fn show_default<R: Runtime>(app: &AppHandle<R>) {
     // 螢幕底下）。直接問選單列圖示在哪裡，跟點圖示叫出來的位置一樣。
     // Windows 不走這條：圖示收在溢位區時量到的是溢位區的位置。
     #[cfg(target_os = "macos")]
-    if let Some(near) = tray_center(app, &window) {
+    if let Some(near) = tray_center(app) {
         show(&window, near);
         return;
     }
@@ -133,18 +194,21 @@ pub fn show_default<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// 選單列圖示的中心點，實體像素。
+///
+/// tray-icon 0.24 在 macOS 上已經乘過圖示那台螢幕的倍率（`get_tray_rect`），給的
+/// 一定是 `Physical`。不拿面板視窗的 `scale_factor()` 換算：那是面板所在那台的
+/// 倍率，跟選單列無關，而且登入完成時是從 tokio 執行緒呼叫的，要等主執行緒一趟。
 #[cfg(target_os = "macos")]
-fn tray_center<R: Runtime>(
-    app: &AppHandle<R>,
-    window: &WebviewWindow<R>,
-) -> Option<PhysicalPosition<f64>> {
+fn tray_center<R: Runtime>(app: &AppHandle<R>) -> Option<PhysicalPosition<f64>> {
+    use tauri::{Position, Size};
+
     let rect = app.tray_by_id(crate::tray::TRAY_ID)?.rect().ok()??;
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let at: PhysicalPosition<f64> = rect.position.to_physical(scale);
-    let size: tauri::PhysicalSize<f64> = rect.size.to_physical(scale);
+    let (Position::Physical(at), Size::Physical(size)) = (rect.position, rect.size) else {
+        return None;
+    };
     Some(PhysicalPosition::new(
-        at.x + size.width / 2.0,
-        at.y + size.height / 2.0,
+        f64::from(at.x) + f64::from(size.width) / 2.0,
+        f64::from(at.y) + f64::from(size.height) / 2.0,
     ))
 }
 
