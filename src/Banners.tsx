@@ -1,4 +1,6 @@
 import { daysUntil, formatCountdown } from "./format";
+import ProgressButton from "./ProgressButton";
+import type { UpdateProgress } from "./types";
 
 /** 憑證剩這麼多天以內就開始提醒（spec §4.4）。 */
 const WARN_WITHIN_DAYS = 7;
@@ -7,6 +9,7 @@ export default function Banners({
   clientTokenExpiresAt,
   showTrayHint,
   updateVersion,
+  updateProgress = null,
   busy,
   loggingIn,
   onDismissHint,
@@ -19,6 +22,8 @@ export default function Banners({
   showTrayHint: boolean;
   /// 有新版本可以裝。登入畫面不給，那裡還沒有資格談更新。
   updateVersion?: string | null;
+  /// 更新安裝中的進度。不是 null 時「更新」換成進度，「知道了」收掉。
+  updateProgress?: UpdateProgress | null;
   busy: boolean;
   loggingIn?: boolean;
   onDismissHint: () => void;
@@ -44,10 +49,14 @@ export default function Banners({
       {updateVersion && onInstallUpdate && (
         <div className="hint">
           <p>有新版本 {updateVersion}</p>
-          <button className="link" disabled={busy} onClick={onInstallUpdate}>
-            更新
-          </button>
-          {onDismissUpdate && (
+          {updateProgress ? (
+            <ProgressButton progress={updateProgress} className="link" />
+          ) : (
+            <button className="link" disabled={busy} onClick={onInstallUpdate}>
+              更新
+            </button>
+          )}
+          {onDismissUpdate && !updateProgress && (
             <button className="link" disabled={busy} onClick={onDismissUpdate}>
               知道了
             </button>

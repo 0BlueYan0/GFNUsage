@@ -202,6 +202,26 @@ describe("Banners", () => {
     expect(onDismissUpdate).toHaveBeenCalledTimes(1);
   });
 
+  /// 安裝途中「更新」再按是重裝，「知道了」會把正在看的進度收掉。
+  it("安裝中換成進度，知道了收掉", () => {
+    render(
+      <Banners
+        clientTokenExpiresAt={null}
+        showTrayHint={false}
+        updateVersion="0.1.1"
+        updateProgress={{ kind: "downloading", value: 42 }}
+        busy={false}
+        onDismissHint={vi.fn()}
+        onInstallUpdate={vi.fn()}
+        onDismissUpdate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "42%" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "更新" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "知道了" })).toBeNull();
+  });
+
   /// 登入畫面不談更新，`App` 那邊傳的就是 null。
   it("沒有新版本就不畫", () => {
     render(

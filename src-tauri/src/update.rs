@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 use crate::AppState;
@@ -32,6 +32,27 @@ pub const FIRST_CHECK_DELAY: Duration = Duration::from_secs(60);
 /// 永遠收不到。
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// 安裝進度的事件名稱。字串要和前端 `App.tsx` 的 `UPDATE_PROGRESS` 一致。
+pub const PROGRESS_EVENT: &str = "update-progress";
+
+/// 安裝走到哪裡。事件與 `get_update_status` 送的是同一個形狀：從系統匣按下
+/// 更新時面板多半是收著的，之後打開要讀得到當下的百分比，不能只靠事件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "value")]
+pub enum Progress {
+    /// 下載中。回應沒有 `Content-Length` 時算不出百分比，是 `None`。
+    Downloading(Option<u8>),
+    /// 下載完，正在驗簽章、換掉 bundle 或啟動安裝程式。updater 先呼叫
+    /// `on_download_finish` 再驗簽章，所以「安裝中」也蓋到驗簽那一段。
+    Installing,
+}
+
+/// 收到 `done` 位元組、總共 `total` 時的百分比。
+fn percent(done: u64, total: Option<u64>) -> Option<u8> {
+    let total = total.filter(|&t| t > 0)?;
+    Some((done.min(total) * 100 / total) as u8)
+}
+
 #[derive(Default)]
 pub struct UpdateState {
     /// 查到、還沒安裝的那一版。
@@ -46,6 +67,9 @@ pub struct UpdateState {
 
     /// 已經在裝了。使用者可能在系統匣按一次、關於頁又按一次。
     installing: AtomicBool,
+
+    /// 安裝走到哪裡。沒在裝就是 `None`。
+    progress: Mutex<Option<Progress>>,
 }
 
 impl UpdateState {
@@ -57,6 +81,16 @@ impl UpdateState {
     pub fn installing(&self) -> bool {
         self.installing.load(Ordering::SeqCst)
     }
+
+    pub fn progress(&self) -> Option<Progress> {
+        *self.progress.lock().unwrap()
+    }
+}
+
+/// 寫進 `UpdateState` 再送給面板。
+fn report<R: Runtime>(app: &AppHandle<R>, progress: Option<Progress>) {
+    *app.state::<UpdateState>().progress.lock().unwrap() = progress;
+    let _ = app.emit(PROGRESS_EVENT, progress);
 }
 
 /// App Translocation 底下真正的 bundle 路徑。沒被搬就是 `None`。
@@ -236,13 +270,32 @@ pub async fn install<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         );
     }
 
-    match pending.download_and_install(|_, _| {}, || {}).await {
+    report(&app, Some(Progress::Downloading(None)));
+    let mut done: u64 = 0;
+    let mut last = None;
+    let result = pending
+        .download_and_install(
+            |chunk, total| {
+                done += chunk as u64;
+                // 百分比變了才送。一個 chunk 送一次的話，十幾 MB 是上千個事件。
+                let now = percent(done, total);
+                if now != last {
+                    last = now;
+                    report(&app, Some(Progress::Downloading(now)));
+                }
+            },
+            || report(&app, Some(Progress::Installing)),
+        )
+        .await;
+
+    match result {
         Ok(()) => {
             // Windows 到不了這裡。macOS 會：換好的是磁碟上的 bundle，記憶體裡
             // 跑的還是舊的程式碼。不重設旗標的話關於頁永遠停在「更新安裝中」，
             // 而 `pending` 已經被 take 走，系統匣那行再按一次會在上面的 swap
             // 直接 return，按下去沒反應。
             state.installing.store(false, Ordering::SeqCst);
+            report(&app, None);
             log::info!("{version} 安裝完成，重新啟動");
             if let Some(bundle) = bundle {
                 // `app.restart()` 開的是 `current_exe()`，也就是唯讀掛載點上
@@ -267,6 +320,7 @@ pub async fn install<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
             // 放回去，讓使用者能再按一次，不必等下一個檢查週期。
             *state.pending.lock().unwrap() = Some(pending);
             state.installing.store(false, Ordering::SeqCst);
+            report(&app, None);
             log::warn!("{version} 安裝失敗：{e}");
 
             // 寫進面板的錯誤格，不是只回傳。系統匣那條路是
@@ -305,6 +359,34 @@ mod tests {
 
         assert_eq!(state.available(), None);
         assert!(!state.installing());
+    }
+
+    #[test]
+    fn percent_needs_a_total() {
+        assert_eq!(percent(500, None), None);
+        assert_eq!(percent(500, Some(0)), None);
+        assert_eq!(percent(0, Some(1000)), Some(0));
+        assert_eq!(percent(421, Some(1000)), Some(42));
+        assert_eq!(percent(1000, Some(1000)), Some(100));
+        // 伺服器給的長度比實際少時不超過 100。
+        assert_eq!(percent(1200, Some(1000)), Some(100));
+    }
+
+    /// 前端靠 `kind` 分「下載中」與「安裝中」，`value` 是 null 時不畫百分比。
+    #[test]
+    fn progress_reaches_the_panel_as_kind_and_value() {
+        let json = |p: Option<Progress>| serde_json::to_string(&p).unwrap();
+
+        assert_eq!(
+            json(Some(Progress::Downloading(Some(42)))),
+            r#"{"kind":"downloading","value":42}"#
+        );
+        assert_eq!(
+            json(Some(Progress::Downloading(None))),
+            r#"{"kind":"downloading","value":null}"#
+        );
+        assert_eq!(json(Some(Progress::Installing)), r#"{"kind":"installing"}"#);
+        assert_eq!(json(None), "null");
     }
 
     #[test]

@@ -7,6 +7,7 @@ function props(overrides: Partial<Parameters<typeof About>[0]> = {}) {
     version: "0.1.0",
     updateVersion: null,
     installing: false,
+    progress: null,
     autostart: false,
     busy: false,
     note: null,
@@ -56,10 +57,18 @@ describe("About", () => {
   });
 
   /// 安裝途中兩顆按鈕都不該在：一顆會重裝，一顆會蓋掉正在進行的事。
-  it("安裝中不給按鈕", () => {
-    render(<About {...props({ updateVersion: "0.1.1", installing: true })} />);
+  it("安裝中不給按鈕，改顯示進度", () => {
+    render(
+      <About
+        {...props({
+          updateVersion: "0.1.1",
+          installing: true,
+          progress: { kind: "downloading", value: 42 },
+        })}
+      />,
+    );
 
-    expect(screen.getByText("更新安裝中")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "42%" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /更新到/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "檢查更新" })).toBeNull();
   });

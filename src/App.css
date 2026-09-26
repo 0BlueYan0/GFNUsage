@@ -308,6 +308,31 @@ button.link {
   color: var(--fg-muted);
 }
 
+/* 更新安裝中那顆按鈕。按不下去，但不套 `:disabled` 的半透明：那樣進度與
+   百分比都會淡掉，而那正是這時候要看的東西。 */
+button.progress,
+button.progress:disabled {
+  opacity: 1;
+  border-color: transparent;
+  /* 填色不用純 `--accent`：字是 `--fg`，深色模式的淺色字壓在亮綠上讀不到。
+     混進底色之後，淺色模式偏淺、深色模式偏深，兩邊的字都讀得到。 */
+  background: linear-gradient(
+      to right,
+      color-mix(in srgb, var(--accent) 55%, var(--bg-sunken)) var(--progress, 0%),
+      var(--line) var(--progress, 0%)
+    )
+    border-box;
+  color: var(--fg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 橫幅那一顆原本是文字連結，寬度跟著字走。百分比從 9% 跳到 10% 時
+   字數會變，給一個最小寬度，旁邊的文字才不會跟著左右移。 */
+button.link.progress {
+  min-width: 64px;
+}
+
 /* 取代原本那句「或者，從已安裝的 GeForce NOW 匯入…」。
    登入與匯入是兩條路，用一條線分開就看得出來。 */
 .rule {

@@ -127,8 +127,18 @@ const METRIC = QUERY.get("metric") === "used" ? "used" : "remaining";
     }
     // 關於頁要的三樣。給有值的版本，不然那一頁空著就看不出版面。
     if (command === "app_version") return "0.1.0";
+    // `?progress=42` 看安裝中那顆按鈕，`installing` 看下載完之後。
     if (command === "get_update_status") {
-      return { version: "0.1.1", installing: false };
+      const progress = QUERY.get("progress");
+      if (progress === null) return { version: "0.1.1", installing: false, progress: null };
+      return {
+        version: "0.1.1",
+        installing: true,
+        progress:
+          progress === "installing"
+            ? { kind: "installing" }
+            : { kind: "downloading", value: Number(progress) },
+      };
     }
     if (command === "get_autostart") return false;
     if (command === "get_schedule") return SCHEDULE;

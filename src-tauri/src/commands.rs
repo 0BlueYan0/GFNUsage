@@ -19,7 +19,7 @@ use crate::quota::{DisplayState, QuotaSnapshot};
 use crate::store::{self, PollInterval, SnapshotRow};
 use crate::tray;
 use crate::trend;
-use crate::update::{CheckResult, UpdateState};
+use crate::update::{CheckResult, Progress, UpdateState};
 use crate::AppState;
 use tauri_plugin_autostart::ManagerExt;
 
@@ -107,6 +107,7 @@ pub fn app_version(app: AppHandle) -> String {
 pub struct UpdateStatus {
     pub version: Option<String>,
     pub installing: bool,
+    pub progress: Option<Progress>,
 }
 
 #[tauri::command]
@@ -114,6 +115,7 @@ pub fn get_update_status(update: State<'_, UpdateState>) -> UpdateStatus {
     UpdateStatus {
         version: update.available(),
         installing: update.installing(),
+        progress: update.progress(),
     }
 }
 

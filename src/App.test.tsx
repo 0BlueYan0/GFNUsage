@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const invoke = vi.fn();
@@ -71,5 +71,38 @@ describe("App", () => {
     fire();
 
     await waitFor(() => expect(screen.getByText("50")).toBeTruthy());
+  });
+
+  /// 面板在安裝最後一刻打開：讀進度的 invoke 已送出（後端還在 99%），安裝
+  /// 失敗的 null 事件先到，invoke 才回來。回來那份是過期的，不能把 99% 寫回去，
+  /// 不然橫幅停在按不下去的「99%」，「更新」與「知道了」都不見。
+  it("進度事件之後才回來的狀態讀取不覆蓋事件", async () => {
+    let resolveStatus: (status: unknown) => void = () => {};
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "get_update_status") {
+        return new Promise((resolve) => {
+          resolveStatus = resolve;
+        });
+      }
+      return Promise.resolve({ ...panelData(6000), updateVersion: "0.4.0" });
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("有新版本 0.4.0")).toBeTruthy());
+
+    const onProgress = listen.mock.calls.find(
+      ([name]) => name === "update-progress",
+    )?.[1] as (event: { payload: unknown }) => void;
+    onProgress({ payload: null });
+    resolveStatus({
+      version: "0.4.0",
+      installing: false,
+      progress: { kind: "downloading", value: 99 },
+    });
+
+    // 等 invoke 的續行跑完再看畫面。用 waitFor 的話第一次檢查就過了，那時
+    // 續行還沒跑，看到的是事件之前的畫面。
+    await act(async () => {});
+    expect(screen.getByRole("button", { name: "更新" })).toBeTruthy();
+    expect(screen.queryByText("99%")).toBeNull();
   });
 });

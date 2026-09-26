@@ -1,3 +1,6 @@
+import ProgressButton from "./ProgressButton";
+import type { UpdateProgress } from "./types";
+
 /**
  * 版本、更新、開機自動啟動，獨立一頁。
  *
@@ -10,6 +13,7 @@ export default function About({
   version,
   updateVersion,
   installing,
+  progress,
   autostart,
   busy,
   note,
@@ -22,6 +26,7 @@ export default function About({
   version: string | null;
   updateVersion: string | null;
   installing: boolean;
+  progress: UpdateProgress | null;
   /// 讀不到就是 null。那時不畫開關 —— 畫一個空的，使用者一碰就等於替他
   /// 做了決定。
   autostart: boolean | null;
@@ -51,21 +56,19 @@ export default function About({
         </div>
       </dl>
 
-      {installing ? (
-        <p className="note">更新安裝中</p>
-      ) : (
-        <div className="buttons">
-          {updateVersion ? (
+      <div className="buttons">
+        {installing ? (
+          <ProgressButton progress={progress} className="primary" />
+        ) : updateVersion ? (
             <button className="primary" disabled={busy} onClick={onInstallUpdate}>
               更新到 {updateVersion}
             </button>
-          ) : (
-            <button disabled={busy} onClick={onCheckUpdate}>
-              {busy ? "檢查中…" : "檢查更新"}
-            </button>
-          )}
-        </div>
-      )}
+        ) : (
+          <button disabled={busy} onClick={onCheckUpdate}>
+            {busy ? "檢查中…" : "檢查更新"}
+          </button>
+        )}
+      </div>
 
       {autostart !== null && (
         <label className="toggle">

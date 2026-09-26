@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
 import Banners from "./Banners";
 import SignIn from "./SignIn";
@@ -27,6 +27,7 @@ import type {
   PanelData,
   QuotaSnapshot,
   Schedule,
+  UpdateProgress,
 } from "./types";
 
 const STATE_BADGE: Record<DisplayState, string | null> = {
@@ -156,6 +157,15 @@ const PANEL_SHOWN = "panel-shown";
 /** 後端抓到新資料了。字串要和 `panel::REFRESHED_EVENT` 一致。 */
 const DATA_REFRESHED = "data-refreshed";
 
+/** 更新安裝的進度。字串要和 `update::PROGRESS_EVENT` 一致。 */
+const UPDATE_PROGRESS = "update-progress";
+
+interface UpdateStatus {
+  version: string | null;
+  installing: boolean;
+  progress: UpdateProgress | null;
+}
+
 interface AboutData {
   version: string | null;
   updateVersion: string | null;
@@ -192,6 +202,11 @@ export default function App() {
   // 不通時要等逾時再直連一次），共用的話那段時間主面板的「立即更新」會寫
   // 「更新中…」、五顆按鈕全部按不動 —— 而那裡根本沒有事情在跑。
   const [aboutBusy, setAboutBusy] = useState(false);
+  // 關於頁與主面板的橫幅共用。事件之外還要在開面板時讀一次：從系統匣按下
+  // 更新時面板是收著的，前面的事件已經送過了。
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(
+    null,
+  );
 
   const load = useCallback(async () => {
     setData(await invoke<PanelData>("get_snapshot"));
@@ -208,8 +223,24 @@ export default function App() {
     await load();
   }, [load]);
 
+  // 事件與 `get_update_status` 的回覆會交錯。面板在安裝最後一刻打開時，
+  // 讀取已送出（後端還在 99%）、安裝失敗的 null 事件先到、讀取才回來，
+  // 回來那份就把 99% 寫回去，橫幅停在按不下去的「99%」，「更新」與
+  // 「知道了」都不見，要等下一次面板顯示才恢復。每個事件都讓它之前送出的
+  // 讀取作廢。
+  const progressEpoch = useRef(0);
+  const loadProgress = useCallback(async () => {
+    const epoch = progressEpoch.current;
+    const status = await invoke<UpdateStatus>("get_update_status").catch(
+      () => null,
+    );
+    if (progressEpoch.current !== epoch) return;
+    setUpdateProgress(status?.progress ?? null);
+  }, []);
+
   useEffect(() => {
     void load();
+    void loadProgress();
     const onVisible = () => {
       if (document.visibilityState === "visible") {
         void load();
@@ -223,6 +254,7 @@ export default function App() {
     // `visibilitychange` 留著：macOS 沒實測過，多一條沒有壞處。
     const shown = listen(PANEL_SHOWN, () => {
       void load();
+      void loadProgress();
       void refreshInBackground();
     });
     // 背景抓完（定時、GFN 視窗轉換、系統匣「立即更新」）會送這個。
@@ -230,12 +262,17 @@ export default function App() {
     const refreshed = listen(DATA_REFRESHED, () => {
       void load();
     });
+    const progress = listen<UpdateProgress | null>(UPDATE_PROGRESS, (event) => {
+      progressEpoch.current += 1;
+      setUpdateProgress(event.payload);
+    });
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
       void shown.then((stop) => stop());
       void refreshed.then((stop) => stop());
+      void progress.then((stop) => stop());
     };
-  }, [load, refreshInBackground]);
+  }, [load, loadProgress, refreshInBackground]);
 
   /**
    * 跑一個會動到後端狀態的動作：期間鎖住按鈕，結束後一律重新載入面板資料。
@@ -257,9 +294,7 @@ export default function App() {
   const loadAbout = async (): Promise<AboutData> => {
     const [version, update, autostart] = await Promise.all([
       invoke<string>("app_version").catch(() => null),
-      invoke<{ version: string | null; installing: boolean }>(
-        "get_update_status",
-      ).catch(() => null),
+      invoke<UpdateStatus>("get_update_status").catch(() => null),
       invoke<boolean>("get_autostart").catch(() => null),
     ]);
     return {
@@ -352,6 +387,7 @@ export default function App() {
       // `withLogin` 為真的那一次就是主面板（登入畫面走 false）。
       // 登入畫面不談更新：那時使用者要做的只有一件事。
       updateVersion={withLogin ? data.updateVersion : null}
+      updateProgress={updateProgress}
       busy={busy}
       loggingIn={starting || data.loginPending}
       onDismissHint={() => runQuietly(() => invoke("dismiss_tray_hint"))}
@@ -375,7 +411,8 @@ export default function App() {
       <About
         version={about.version}
         updateVersion={about.updateVersion}
-        installing={about.installing}
+        installing={about.installing || updateProgress !== null}
+        progress={updateProgress}
         autostart={about.autostart}
         busy={aboutBusy}
         note={aboutNote}

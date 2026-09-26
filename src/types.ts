@@ -137,3 +137,8 @@ export interface PanelData {
   /** 查到、使用者還沒關掉提示的新版本。沒有就是已經最新。 */
   updateVersion: string | null;
 }
+
+/** `update::Progress`。沒在裝更新時是 null。 */
+export type UpdateProgress =
+  | { kind: "downloading"; value: number | null }
+  | { kind: "installing" };
