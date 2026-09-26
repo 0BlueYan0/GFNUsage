@@ -61,20 +61,6 @@ fn main() {
             // 加一個會 pump 訊息的呼叫就會變成真的。
             app.manage(gfnusage_lib::update::UpdateState::default());
 
-            // 首次啟動主動把面板叫出來一次。
-            //
-            // Windows 11 預設把新的系統匣圖示收進溢位區，使用者看不到圖示
-            // 就點不開面板 —— 而要他把圖示拖出來的那句提示，正好在面板裡。
-            // 不主動出現的話，那句話永遠沒有人看得到。
-            let ui_path = state.ui_state_path();
-            let mut ui = gfnusage_lib::store::load_ui_state(&ui_path);
-            if !ui.first_run_done {
-                ui.first_run_done = true;
-                // 寫不進去就下次再叫一次，不值得為它讓整個啟動失敗。
-                let _ = gfnusage_lib::store::save_ui_state(&ui_path, &ui);
-                panel::show_default(app.handle());
-            }
-
             if let Some(window) = app.get_webview_window(PANEL_LABEL) {
                 let handle = app.handle().clone();
                 window.on_window_event(move |event| match event {
@@ -170,6 +156,24 @@ fn main() {
             // 上面的 placeholder 是 Windows 系統匣的正方形圖示。macOS 選單列畫的是
             // 另一種（`tray::apply_menubar`），不重畫的話第一輪輪詢回來之前是那一個。
             tray::sync(app.handle(), &state);
+
+            // 首次啟動主動把面板叫出來一次。
+            //
+            // Windows 11 預設把新的系統匣圖示收進溢位區，使用者看不到圖示
+            // 就點不開面板，而要他把圖示拖出來的那句提示，正好在面板裡。
+            // 不主動出現的話，那句話永遠沒有人看得到。
+            //
+            // 放在系統匣建好之後：macOS 的 `show_default` 要問選單列圖示在哪裡，
+            // 系統匣還沒 build 就查不到，第一次開的面板會退回右上角，之後每一次
+            // 都在圖示下方。
+            let ui_path = state.ui_state_path();
+            let mut ui = gfnusage_lib::store::load_ui_state(&ui_path);
+            if !ui.first_run_done {
+                ui.first_run_done = true;
+                // 寫不進去就下次再叫一次，不值得為它讓整個啟動失敗。
+                let _ = gfnusage_lib::store::save_ui_state(&ui_path, &ui);
+                panel::show_default(app.handle());
+            }
 
             // id_token 的來源：帳號頁那顆 client_id 的靜默授權。
             //
